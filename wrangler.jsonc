@@ -1,0 +1,25 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "cloudflare-vps-monitoring",
+  "main": "src/worker/index.ts",
+  "compatibility_date": "2025-02-15",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "vps_monitor_db",
+      "database_id": "vps-monitor-d1-placeholder"
+    }
+  ],
+  "triggers": {
+    "crons": ["*/2 * * * *"]
+  },
+  "observability": {
+    "enabled": true
+  }
+}
