@@ -165,7 +165,7 @@ export async function getAllTargetsWithStats(db: D1Database): Promise<Target[]> 
 
   return Promise.all(
     targets.map(async (t) => {
-      const [latest, s24, s7, s30] = await db.batch([
+      const [latest, s24, s7, s30, recent] = await db.batch([
         db
           .prepare(
             `SELECT status, status_code, response_time_ms, colo, error_message, timestamp
@@ -194,12 +194,19 @@ export async function getAllTargetsWithStats(db: D1Database): Promise<Target[]> 
              FROM health_checks WHERE target_id = ? AND timestamp >= datetime('now', '-30 day')`
           )
           .bind(t.id),
+        db
+          .prepare(
+            `SELECT status, response_time_ms, timestamp
+             FROM health_checks WHERE target_id = ? ORDER BY timestamp DESC LIMIT 24`
+          )
+          .bind(t.id),
       ]);
 
       const l = (latest.results?.[0] as any) || null;
       const a = (s24.results?.[0] as any) || {};
       const b = (s7.results?.[0] as any) || {};
       const c = (s30.results?.[0] as any) || {};
+      const rec = ((recent.results || []) as any[]).reverse();
 
       return {
         ...t,
@@ -216,6 +223,7 @@ export async function getAllTargetsWithStats(db: D1Database): Promise<Target[]> 
         min_latency_24h: round1(a.min_l),
         max_latency_24h: round1(a.max_l),
         checks_24h: a.total ?? 0,
+        recent_checks: rec,
       } as Target;
     })
   );
@@ -373,6 +381,31 @@ export async function createTarget(db: D1Database, target: Omit<Target, 'created
       target.is_active
     )
     .run();
+}
+
+export async function updateTarget(
+  db: D1Database,
+  id: string,
+  data: Partial<Pick<Target, 'name' | 'host' | 'port' | 'protocol' | 'path' | 'expected_status' | 'timeout_ms' | 'is_active'>>
+): Promise<void> {
+  await initDatabase(db);
+  const fields: string[] = [];
+  const values: any[] = [];
+
+  if (data.name !== undefined) { fields.push('name = ?'); values.push(data.name); }
+  if (data.host !== undefined) { fields.push('host = ?'); values.push(data.host); }
+  if (data.port !== undefined) { fields.push('port = ?'); values.push(data.port); }
+  if (data.protocol !== undefined) { fields.push('protocol = ?'); values.push(data.protocol); }
+  if (data.path !== undefined) { fields.push('path = ?'); values.push(data.path); }
+  if (data.expected_status !== undefined) { fields.push('expected_status = ?'); values.push(data.expected_status); }
+  if (data.timeout_ms !== undefined) { fields.push('timeout_ms = ?'); values.push(data.timeout_ms); }
+  if (data.is_active !== undefined) { fields.push('is_active = ?'); values.push(data.is_active); }
+
+  if (fields.length === 0) return;
+  fields.push('updated_at = CURRENT_TIMESTAMP');
+  values.push(id);
+
+  await db.prepare(`UPDATE targets SET ${fields.join(', ')} WHERE id = ?`).bind(...values).run();
 }
 
 export async function deleteTarget(db: D1Database, targetId: string): Promise<void> {

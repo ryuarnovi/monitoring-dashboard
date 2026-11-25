@@ -1,17 +1,18 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { Target, DashboardOverview, SystemSettings } from '../types';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { Target, DashboardOverview, SystemSettings, DisplayStatus } from '../types';
 import { Navbar } from './components/Navbar';
 import { SummaryCards } from './components/SummaryCards';
 import { ServerCard } from './components/ServerCard';
 import { LatencyChart } from './components/LatencyChart';
 import { IncidentHistory } from './components/IncidentHistory';
 import { AddServerModal } from './components/AddServerModal';
+import { EditServerModal } from './components/EditServerModal';
 import { ArchitectureGuide } from './components/ArchitectureGuide';
 import { SettingsTab } from './components/SettingsTab';
 import { LoginScreen } from './components/LoginScreen';
 import { SetupScreen } from './components/SetupScreen';
 import { apiFetch } from './format';
-import { Server, ShieldAlert, Terminal, Plus, CheckCircle2, ExternalLink, Info, Lock, Sliders } from 'lucide-react';
+import { Server, ShieldAlert, Terminal, Plus, CheckCircle2, ExternalLink, Info, Lock, Sliders, Search, Filter } from 'lucide-react';
 
 type Tab = 'servers' | 'incidents' | 'settings' | 'architecture';
 type Toast = { message: string; type: 'success' | 'info' | 'error' };
@@ -23,6 +24,7 @@ export const App: React.FC = () => {
   const [overview, setOverview] = useState<DashboardOverview | null>(null);
   const [servers, setServers] = useState<Target[]>([]);
   const [chartServer, setChartServer] = useState<Target | null>(null);
+  const [editingServer, setEditingServer] = useState<Target | null>(null);
   const [isAddOpen, setIsAddOpen] = useState(false);
   const [tab, setTab] = useState<Tab>('servers');
   const [isLoading, setIsLoading] = useState(true);
@@ -31,6 +33,10 @@ export const App: React.FC = () => {
   const [probingId, setProbingId] = useState<string | null>(null);
   const [refreshMs, setRefreshMs] = useState(30000);
   const [toast, setToast] = useState<Toast | null>(null);
+
+  // Search and status filter
+  const [searchQuery, setSearchQuery] = useState('');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'online' | 'degraded' | 'offline'>('all');
 
   const notify = (message: string, type: Toast['type'] = 'info') => {
     setToast({ message, type });
@@ -181,7 +187,19 @@ export const App: React.FC = () => {
     }
   };
 
-  // If first-time initial setup is required
+  // Filtered servers by search query and status
+  const filteredServers = useMemo(() => {
+    return servers.filter((s) => {
+      const matchesSearch =
+        s.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        s.host.toLowerCase().includes(searchQuery.toLowerCase());
+      const matchesStatus =
+        statusFilter === 'all' || s.current_status === statusFilter;
+      return matchesSearch && matchesStatus;
+    });
+  }, [servers, searchQuery, statusFilter]);
+
+  // If initial setup is required
   if (isSetupRequired) {
     return (
       <SetupScreen
@@ -265,8 +283,10 @@ export const App: React.FC = () => {
           </div>
         )}
 
+        {/* Overview metric cards */}
         <SummaryCards overview={overview} />
 
+        {/* Tab switcher */}
         <div className="flex items-center justify-between border-b border-slate-800/80 mb-6 overflow-x-auto">
           <div className="flex space-x-1 sm:space-x-3">
             {tabBtn('servers', <Server className="w-4 h-4" />, `Nodes (${servers.length})`)}
@@ -279,42 +299,93 @@ export const App: React.FC = () => {
           )}
         </div>
 
-        {tab === 'servers' &&
-          (isLoading ? (
-            <div className="py-24 text-center text-slate-500">
-              <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-orange-500 mx-auto mb-3" />
-              <p className="text-sm">Connecting to Cloudflare Workers &amp; D1...</p>
-            </div>
-          ) : servers.length === 0 && !loadError ? (
-            <div className="py-20 text-center bg-[#111726] border border-slate-800 rounded-2xl p-8">
-              <Server className="w-12 h-12 text-slate-600 mx-auto mb-3" />
-              <h3 className="text-lg font-bold text-white">No VPS configured yet</h3>
-              <p className="text-xs text-slate-400 max-w-md mx-auto mt-1 mb-5">
-                Add your first VPS to monitor. Zero software or agents required on the target machine.
-              </p>
-              <button
-                onClick={() => setIsAddOpen(true)}
-                className="px-4 py-2 rounded-xl bg-orange-500 hover:bg-orange-600 text-white font-medium text-xs inline-flex items-center space-x-1.5 shadow-lg shadow-orange-500/20"
-              >
-                <Plus className="w-4 h-4" />
-                <span>Add VPS Node</span>
-              </button>
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              {servers.map((s) => (
-                <ServerCard
-                  key={s.id}
-                  server={s}
-                  latencyThresholdMs={threshold}
-                  onProbeNow={handleProbeNow}
-                  onSelectForChart={setChartServer}
-                  onDeleteServer={handleDelete}
-                  isProbing={probingId === s.id}
-                />
-              ))}
-            </div>
-          ))}
+        {/* Tab 1: Monitored Nodes View with Search & Status Filters */}
+        {tab === 'servers' && (
+          <div>
+            {/* Filter and Search Bar */}
+            {servers.length > 0 && (
+              <div className="flex flex-col sm:flex-row items-center justify-between gap-3 mb-6 bg-slate-900/40 p-3 rounded-xl border border-slate-800/80">
+                {/* Search */}
+                <div className="relative w-full sm:w-72">
+                  <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder="Search by node name or IP..."
+                    className="w-full bg-slate-900 border border-slate-750 text-white rounded-lg pl-9 pr-3 py-1.5 text-xs outline-none focus:border-orange-500 transition"
+                  />
+                </div>
+
+                {/* Status Filter Buttons */}
+                <div className="flex items-center space-x-1 w-full sm:w-auto overflow-x-auto text-xs">
+                  <span className="text-slate-500 text-[11px] mr-1 hidden sm:inline">Status:</span>
+                  {(['all', 'online', 'degraded', 'offline'] as const).map((st) => (
+                    <button
+                      key={st}
+                      onClick={() => setStatusFilter(st)}
+                      className={`px-3 py-1 rounded-lg capitalize transition text-xs font-medium ${
+                        statusFilter === st
+                          ? 'bg-orange-500 text-white shadow-sm'
+                          : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
+                      }`}
+                    >
+                      {st}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {isLoading ? (
+              <div className="py-24 text-center text-slate-500">
+                <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-orange-500 mx-auto mb-3" />
+                <p className="text-sm">Connecting to Cloudflare Workers &amp; D1...</p>
+              </div>
+            ) : servers.length === 0 && !loadError ? (
+              <div className="py-20 text-center bg-[#111726] border border-slate-800 rounded-2xl p-8">
+                <Server className="w-12 h-12 text-slate-600 mx-auto mb-3" />
+                <h3 className="text-lg font-bold text-white">No VPS configured yet</h3>
+                <p className="text-xs text-slate-400 max-w-md mx-auto mt-1 mb-5">
+                  Add your first VPS to monitor. Zero software or agents required on the target machine.
+                </p>
+                <button
+                  onClick={() => setIsAddOpen(true)}
+                  className="px-4 py-2 rounded-xl bg-orange-500 hover:bg-orange-600 text-white font-medium text-xs inline-flex items-center space-x-1.5 shadow-lg shadow-orange-500/20"
+                >
+                  <Plus className="w-4 h-4" />
+                  <span>Add VPS Node</span>
+                </button>
+              </div>
+            ) : filteredServers.length === 0 ? (
+              <div className="py-16 text-center text-slate-400 bg-[#111726] border border-slate-800 rounded-2xl p-6">
+                <Search className="w-8 h-8 text-slate-500 mx-auto mb-2" />
+                <p className="text-sm font-semibold text-slate-300">No nodes match your filter</p>
+                <button
+                  onClick={() => { setSearchQuery(''); setStatusFilter('all'); }}
+                  className="text-xs text-orange-400 hover:underline mt-2 inline-block"
+                >
+                  Clear filters
+                </button>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                {filteredServers.map((s) => (
+                  <ServerCard
+                    key={s.id}
+                    server={s}
+                    latencyThresholdMs={threshold}
+                    onProbeNow={handleProbeNow}
+                    onSelectForChart={setChartServer}
+                    onEditServer={setEditingServer}
+                    onDeleteServer={handleDelete}
+                    isProbing={probingId === s.id}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+        )}
 
         {tab === 'incidents' && <IncidentHistory />}
         {tab === 'settings' && (
@@ -329,8 +400,10 @@ export const App: React.FC = () => {
         {tab === 'architecture' && <ArchitectureGuide />}
       </main>
 
+      {/* Latency History Chart Modal */}
       {chartServer && <LatencyChart server={chartServer} latencyThresholdMs={threshold} onClose={() => setChartServer(null)} />}
 
+      {/* Add Server Modal */}
       <AddServerModal
         isOpen={isAddOpen}
         onClose={() => setIsAddOpen(false)}
@@ -340,6 +413,20 @@ export const App: React.FC = () => {
         }}
       />
 
+      {/* Edit Server Modal */}
+      {editingServer && (
+        <EditServerModal
+          server={editingServer}
+          isOpen={!!editingServer}
+          onClose={() => setEditingServer(null)}
+          onServerUpdated={() => {
+            notify('VPS target updated and re-probed', 'success');
+            fetchData();
+          }}
+        />
+      )}
+
+      {/* Footer */}
       <footer className="mt-auto border-t border-slate-800/80 bg-[#0E1322] py-4">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between text-xs text-slate-400 gap-2">
           <span>

@@ -2,6 +2,12 @@ export type TargetStatus = 'online' | 'degraded' | 'offline';
 /** "unknown" = no probe has been recorded yet. */
 export type DisplayStatus = TargetStatus | 'unknown';
 
+export interface CheckSummary {
+  status: TargetStatus;
+  response_time_ms: number | null;
+  timestamp: string;
+}
+
 export interface Target {
   id: string;
   name: string;
@@ -14,7 +20,7 @@ export interface Target {
   is_active: number; // 1 or 0
   created_at: string;
   updated_at: string;
-  // Computed runtime fields (null = no data yet, never a made-up value)
+  // Computed runtime fields
   current_status?: DisplayStatus;
   last_checked_at?: string | null;
   last_status_code?: number | null;
@@ -28,6 +34,7 @@ export interface Target {
   min_latency_24h?: number | null;
   max_latency_24h?: number | null;
   checks_24h?: number;
+  recent_checks?: CheckSummary[];
 }
 
 export interface HealthCheckRecord {

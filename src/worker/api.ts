@@ -15,6 +15,7 @@ import {
   getTargetLatencyHistory,
   getIncidentsPaginated,
   createTarget,
+  updateTarget,
   deleteTarget,
   countTargets,
   saveSession,
@@ -432,6 +433,31 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
     if (deleteMatch && method === 'DELETE') {
       await deleteTarget(env.DB, deleteMatch[1]);
       return json({ success: true, message: 'Target removed' });
+    }
+
+    // PUT /api/targets/:id (Edit target VPS)
+    const targetPutMatch = path.match(/^\/api\/targets\/([\w-]+)$/);
+    if (targetPutMatch && method === 'PUT') {
+      const targetId = targetPutMatch[1];
+      const body = (await request.json().catch(() => ({}))) as any;
+      await updateTarget(env.DB, targetId, {
+        name: body.name ? String(body.name).trim() : undefined,
+        host: body.host ? String(body.host).trim().replace(/^https?:\/\//, '').replace(/\/.*$/, '') : undefined,
+        port: body.port !== undefined ? Number(body.port) : undefined,
+        protocol: body.protocol === 'https' ? 'https' : body.protocol === 'http' ? 'http' : undefined,
+        path: body.path !== undefined ? String(body.path).trim() : undefined,
+        expected_status: body.expected_status !== undefined ? Number(body.expected_status) : undefined,
+        timeout_ms: body.timeout_ms !== undefined ? Number(body.timeout_ms) : undefined,
+        is_active: body.is_active !== undefined ? (body.is_active ? 1 : 0) : undefined,
+      });
+
+      const updated = await getTargetById(env.DB, targetId);
+      if (updated) {
+        const probeRes = await executeExternalProbe(updated, probeOpts);
+        await recordCheckResult(env.DB, probeRes);
+      }
+
+      return json({ success: true, message: 'Target updated successfully' });
     }
 
     // GET /api/targets/:id/history

@@ -30,7 +30,7 @@ interface RawOutcome {
   method: 'fetch' | 'tcp';
 }
 
-/** Standard probe via fetch(). Used for DNS hostnames. */
+/** Standard probe via fetch(). Used for DNS hostnames or HTTP endpoints. */
 async function probeViaFetch(url: string, timeoutMs: number, userAgent: string): Promise<RawOutcome> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -39,7 +39,7 @@ async function probeViaFetch(url: string, timeoutMs: number, userAgent: string):
     const res = await fetch(url, {
       method: 'GET',
       signal: controller.signal,
-      redirect: 'manual',
+      redirect: 'manual', // Read the immediate status (e.g. 200, 301, 302)
       headers: { 'User-Agent': userAgent, Accept: '*/*', 'Cache-Control': 'no-cache' },
     });
     const elapsedMs = Date.now() - start;
@@ -58,7 +58,7 @@ async function probeViaFetch(url: string, timeoutMs: number, userAgent: string):
 
 /**
  * Probe via raw TCP socket (cloudflare:sockets).
- * Used when probing IP addresses directly since fetch() requires DNS hostnames.
+ * Used when direct IP socket connection is needed.
  */
 async function probeViaSocket(target: Target, timeoutMs: number, userAgent: string): Promise<RawOutcome> {
   const start = Date.now();
@@ -135,28 +135,49 @@ export async function executeExternalProbe(target: Target, options: ProberOption
   const userAgent = options.userAgent || DEFAULT_USER_AGENT;
   const url = buildUrl(target);
 
-  const outcome = isIpAddress(target.host)
+  // Dual-Method Probing with Auto-Fallback:
+  // If target is an IP, start with socket; if target is a hostname, start with fetch.
+  // If the initial method fails or is blocked by Cloudflare proxy policy (e.g. 1.1.1.1),
+  // immediately fallback to the alternate method to guarantee reachability!
+  let outcome = isIpAddress(target.host)
     ? await probeViaSocket(target, timeoutMs, userAgent)
     : await probeViaFetch(url, timeoutMs, userAgent);
+
+  if (outcome.statusCode === null) {
+    const fallback = isIpAddress(target.host)
+      ? await probeViaFetch(url, timeoutMs, userAgent)
+      : await probeViaSocket(target, timeoutMs, userAgent);
+    if (fallback.statusCode !== null) {
+      outcome = fallback;
+    }
+  }
 
   const { statusCode } = outcome;
   let errorMessage = outcome.error;
   const responseTimeMs = outcome.elapsedMs;
 
+  // Status Evaluation with Smart HTTP Redirect Recognition
   let status: TargetStatus;
+  const isRedirect = statusCode === 301 || statusCode === 302 || statusCode === 307 || statusCode === 308;
+  const expected = target.expected_status || 200;
+  const isExpected = statusCode === expected || (expected === 200 && isRedirect) || (statusCode !== null && statusCode >= 200 && statusCode < 400 && expected === 200);
+
   if (statusCode === null) {
     status = 'offline';
   } else if (statusCode >= 500) {
     status = 'offline';
     errorMessage = `HTTP server error (${statusCode})`;
-  } else if (target.expected_status && statusCode !== target.expected_status) {
+  } else if (!isExpected) {
     status = 'degraded';
-    errorMessage = `Unexpected status code: received ${statusCode}, expected ${target.expected_status}`;
+    errorMessage = `Unexpected status code: received ${statusCode}, expected ${expected}`;
   } else if (responseTimeMs >= degradedThresholdMs) {
     status = 'degraded';
     errorMessage = `High HTTP latency: ${responseTimeMs}ms (threshold ${degradedThresholdMs}ms)`;
   } else {
     status = 'online';
+    if (isRedirect && expected === 200) {
+      errorMessage = null; // Clean: 301 redirects are healthy web behavior!
+    }
   }
 
   return {
