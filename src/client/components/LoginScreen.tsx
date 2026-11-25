@@ -1,12 +1,12 @@
 import React, { useState } from 'react';
 import { Cloud, Lock, ShieldCheck, KeyRound, AlertTriangle, ArrowRight, Eye, EyeOff } from 'lucide-react';
-import { apiFetch } from '../format';
 
 interface LoginScreenProps {
+  appTitle?: string;
   onLoginSuccess: () => void;
 }
 
-export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
+export const LoginScreen: React.FC<LoginScreenProps> = ({ appTitle = 'VPS Monitoring Dashboard', onLoginSuccess }) => {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -58,14 +58,14 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
       <div className="absolute top-1/4 left-1/2 -translate-x-1/2 -translate-y-1/2 w-96 h-96 bg-orange-600/10 blur-[120px] rounded-full pointer-events-none" />
 
       <div className="w-full max-w-md bg-[#111726]/90 border border-slate-800 backdrop-blur-xl rounded-2xl p-6 sm:p-8 shadow-2xl relative z-10">
-
+        
         {/* Header Branding */}
         <div className="text-center mb-6">
           <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-orange-500 to-amber-600 mx-auto flex items-center justify-center shadow-lg shadow-orange-500/25 ring-1 ring-orange-400/40 mb-3">
             <Cloud className="w-7 h-7 text-white" />
           </div>
           <h1 className="text-xl font-bold text-white tracking-tight">
-            Cloudflare VPS Monitor
+            {appTitle}
           </h1>
           <p className="text-xs text-slate-400 mt-1">
             Zero-Agent Edge Infrastructure Dashboard
@@ -139,8 +139,8 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
 
         {/* Footer info */}
         <div className="mt-6 pt-4 border-t border-slate-800 text-center text-[11px] text-slate-500 space-y-1">
-          <p>Protected by Cloudflare Edge</p>
-          <p className="text-slate-600">External Probes</p>
+          <p>Protected by Cloudflare Edge &amp; D1 SQLite</p>
+          <p className="text-slate-600">Zero-Agent External Probes</p>
         </div>
 
       </div>

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Target, DashboardOverview } from '../types';
+import { Target, DashboardOverview, SystemSettings } from '../types';
 import { Navbar } from './components/Navbar';
 import { SummaryCards } from './components/SummaryCards';
 import { ServerCard } from './components/ServerCard';
@@ -7,15 +7,19 @@ import { LatencyChart } from './components/LatencyChart';
 import { IncidentHistory } from './components/IncidentHistory';
 import { AddServerModal } from './components/AddServerModal';
 import { ArchitectureGuide } from './components/ArchitectureGuide';
+import { SettingsTab } from './components/SettingsTab';
 import { LoginScreen } from './components/LoginScreen';
+import { SetupScreen } from './components/SetupScreen';
 import { apiFetch } from './format';
-import { Server, ShieldAlert, Terminal, Plus, CheckCircle2, ExternalLink, Info, Lock } from 'lucide-react';
+import { Server, ShieldAlert, Terminal, Plus, CheckCircle2, ExternalLink, Info, Lock, Sliders } from 'lucide-react';
 
-type Tab = 'servers' | 'incidents' | 'architecture';
+type Tab = 'servers' | 'incidents' | 'settings' | 'architecture';
 type Toast = { message: string; type: 'success' | 'info' | 'error' };
 
 export const App: React.FC = () => {
   const [isAuthenticated, setIsAuthenticated] = useState<boolean | null>(null);
+  const [isSetupRequired, setIsSetupRequired] = useState<boolean>(false);
+  const [systemSettings, setSystemSettings] = useState<SystemSettings | null>(null);
   const [overview, setOverview] = useState<DashboardOverview | null>(null);
   const [servers, setServers] = useState<Target[]>([]);
   const [chartServer, setChartServer] = useState<Target | null>(null);
@@ -33,12 +37,36 @@ export const App: React.FC = () => {
     window.setTimeout(() => setToast(null), 4000);
   };
 
+  const loadSystemSettings = async () => {
+    try {
+      const res = await fetch('/api/system/settings');
+      const json = (await res.json().catch(() => ({}))) as any;
+      if (json.success && json.data) {
+        setSystemSettings(json.data);
+        if (json.data.is_setup_required) {
+          setIsSetupRequired(true);
+          setIsAuthenticated(false);
+          return true;
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+    return false;
+  };
+
   const checkAuth = async () => {
     try {
       const res = await fetch('/api/auth/me', { credentials: 'same-origin' });
       const data = (await res.json().catch(() => ({}))) as any;
+      if (data.setup_required) {
+        setIsSetupRequired(true);
+        setIsAuthenticated(false);
+        return false;
+      }
       if (res.ok && data.authenticated) {
         setIsAuthenticated(true);
+        setIsSetupRequired(false);
         return true;
       } else {
         setIsAuthenticated(false);
@@ -60,6 +88,7 @@ export const App: React.FC = () => {
       setServers(t.data || []);
       setLoadError(null);
       setIsAuthenticated(true);
+      setIsSetupRequired(false);
     } catch (e: any) {
       if (e.message?.includes('Unauthorized') || e.message?.includes('401')) {
         setIsAuthenticated(false);
@@ -72,11 +101,17 @@ export const App: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    checkAuth().then((authed) => {
-      if (authed) {
-        fetchData();
-      } else {
+    loadSystemSettings().then((setupNeeded) => {
+      if (setupNeeded) {
         setIsLoading(false);
+      } else {
+        checkAuth().then((authed) => {
+          if (authed) {
+            fetchData();
+          } else {
+            setIsLoading(false);
+          }
+        });
       }
     });
   }, [fetchData]);
@@ -146,12 +181,35 @@ export const App: React.FC = () => {
     }
   };
 
-  // If auth state is still determining or false, show login screen
+  // If first-time initial setup is required
+  if (isSetupRequired) {
+    return (
+      <SetupScreen
+        onSetupSuccess={() => {
+          setIsSetupRequired(false);
+          setIsAuthenticated(true);
+          loadSystemSettings();
+          fetchData();
+        }}
+      />
+    );
+  }
+
+  // If not authenticated, show login screen
   if (isAuthenticated === false) {
-    return <LoginScreen onLoginSuccess={() => { setIsAuthenticated(true); fetchData(); }} />;
+    return (
+      <LoginScreen
+        appTitle={systemSettings?.app_title || overview?.app_title}
+        onLoginSuccess={() => {
+          setIsAuthenticated(true);
+          fetchData();
+        }}
+      />
+    );
   }
 
   const threshold = overview?.latency_threshold_ms ?? 1000;
+  const currentTitle = systemSettings?.app_title || overview?.app_title || 'VPS Monitoring Dashboard';
 
   const tabBtn = (id: Tab, icon: React.ReactNode, label: string) => (
     <button
@@ -169,6 +227,7 @@ export const App: React.FC = () => {
     <div className="min-h-screen bg-[#0B0F19] text-slate-100 flex flex-col font-sans selection:bg-orange-500 selection:text-white">
       <Navbar
         overview={overview}
+        appTitle={currentTitle}
         isLoading={isProbingAll}
         onRefreshAll={handleProbeAll}
         onOpenAddModal={() => setIsAddOpen(true)}
@@ -212,6 +271,7 @@ export const App: React.FC = () => {
           <div className="flex space-x-1 sm:space-x-3">
             {tabBtn('servers', <Server className="w-4 h-4" />, `Nodes (${servers.length})`)}
             {tabBtn('incidents', <ShieldAlert className="w-4 h-4" />, 'Incidents (Paginated)')}
+            {tabBtn('settings', <Sliders className="w-4 h-4" />, 'Dynamic Settings')}
             {tabBtn('architecture', <Terminal className="w-4 h-4" />, 'Setup Guide')}
           </div>
           {overview?.access_user && (
@@ -228,16 +288,16 @@ export const App: React.FC = () => {
           ) : servers.length === 0 && !loadError ? (
             <div className="py-20 text-center bg-[#111726] border border-slate-800 rounded-2xl p-8">
               <Server className="w-12 h-12 text-slate-600 mx-auto mb-3" />
-              <h3 className="text-lg font-bold text-white">No VPS configured</h3>
+              <h3 className="text-lg font-bold text-white">No VPS configured yet</h3>
               <p className="text-xs text-slate-400 max-w-md mx-auto mt-1 mb-5">
-                Add a VPS (hostname or IP + port of a web service it already runs). Nothing is installed on the server.
+                Add your first VPS to monitor. Zero software or agents required on the target machine.
               </p>
               <button
                 onClick={() => setIsAddOpen(true)}
-                className="px-4 py-2 rounded-xl bg-orange-500 hover:bg-orange-600 text-white font-medium text-xs inline-flex items-center space-x-1.5"
+                className="px-4 py-2 rounded-xl bg-orange-500 hover:bg-orange-600 text-white font-medium text-xs inline-flex items-center space-x-1.5 shadow-lg shadow-orange-500/20"
               >
                 <Plus className="w-4 h-4" />
-                <span>Add VPS</span>
+                <span>Add VPS Node</span>
               </button>
             </div>
           ) : (
@@ -257,6 +317,15 @@ export const App: React.FC = () => {
           ))}
 
         {tab === 'incidents' && <IncidentHistory />}
+        {tab === 'settings' && (
+          <SettingsTab
+            onSettingsSaved={() => {
+              loadSystemSettings();
+              fetchData();
+              notify('Settings updated successfully', 'success');
+            }}
+          />
+        )}
         {tab === 'architecture' && <ArchitectureGuide />}
       </main>
 
@@ -274,17 +343,25 @@ export const App: React.FC = () => {
       <footer className="mt-auto border-t border-slate-800/80 bg-[#0E1322] py-4">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between text-xs text-slate-400 gap-2">
           <span>
-            <span className="font-semibold text-slate-300">Cloudflare VPS Monitor</span> · zero-agent external monitoring
+            <strong className="text-slate-300">{currentTitle}</strong> · Zero-Agent Edge Monitoring
           </span>
-          <a
-            href="https://github.com/ryuarnovi/monitoring-dashboard"
-            target="_blank"
-            rel="noreferrer noopener"
-            className="text-orange-400 hover:underline flex items-center space-x-1"
-          >
-            <span>GitHub</span>
-            <ExternalLink className="w-3 h-3" />
-          </a>
+          <div className="flex items-center space-x-3">
+            <span>Powered by Cloudflare Workers &amp; D1</span>
+            {systemSettings?.github_url && (
+              <>
+                <span>•</span>
+                <a
+                  href={systemSettings.github_url}
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  className="text-orange-400 hover:underline flex items-center space-x-1"
+                >
+                  <span>Repository</span>
+                  <ExternalLink className="w-3 h-3" />
+                </a>
+              </>
+            )}
+          </div>
         </div>
       </footer>
     </div>

@@ -11,6 +11,7 @@ let schemaReady = false;
 
 /**
  * Ensures tables exist in Cloudflare D1.
+ * Starts with a completely clean slate (no hardcoded seeds).
  */
 export async function initDatabase(db: D1Database): Promise<void> {
   if (schemaReady) return;
@@ -60,6 +61,11 @@ export async function initDatabase(db: D1Database): Promise<void> {
       count INTEGER NOT NULL,
       reset_at INTEGER NOT NULL
     )`),
+    db.prepare(`CREATE TABLE IF NOT EXISTS settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`),
     db.prepare(`CREATE INDEX IF NOT EXISTS idx_checks_target_timestamp ON health_checks(target_id, timestamp DESC)`),
     db.prepare(`CREATE INDEX IF NOT EXISTS idx_checks_timestamp ON health_checks(timestamp DESC)`),
     db.prepare(`CREATE INDEX IF NOT EXISTS idx_incidents_target ON incidents(target_id, start_time DESC)`),
@@ -69,6 +75,67 @@ export async function initDatabase(db: D1Database): Promise<void> {
   ]);
   schemaReady = true;
 }
+
+// -------------------------------------------------------------
+// DYNAMIC SETTINGS & SYSTEM CONFIGURATION
+// -------------------------------------------------------------
+
+export async function getSetting(db: D1Database, key: string, defaultValue = ''): Promise<string> {
+  await initDatabase(db);
+  const row = await db.prepare('SELECT value FROM settings WHERE key = ?').bind(key).first<{ value: string }>();
+  return row?.value ?? defaultValue;
+}
+
+export async function setSetting(db: D1Database, key: string, value: string): Promise<void> {
+  await initDatabase(db);
+  await db
+    .prepare(
+      `INSERT INTO settings (key, value, updated_at)
+       VALUES (?, ?, CURRENT_TIMESTAMP)
+       ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = CURRENT_TIMESTAMP`
+    )
+    .bind(key, value, value)
+    .run();
+}
+
+export async function getAllSettings(db: D1Database): Promise<Record<string, string>> {
+  await initDatabase(db);
+  const res = await db.prepare('SELECT key, value FROM settings').all<{ key: string; value: string }>();
+  const out: Record<string, string> = {};
+  for (const row of res.results || []) {
+    out[row.key] = row.value;
+  }
+  return out;
+}
+
+/**
+ * Returns dynamic session secret. If not provided via env, fetches from D1 or
+ * generates a fresh random 64-character hex key and stores it in D1.
+ */
+export async function getOrGenerateSessionSecret(db: D1Database, envSecret?: string): Promise<string> {
+  if (envSecret && envSecret.trim().length > 0) {
+    return envSecret.trim();
+  }
+  const stored = await getSetting(db, 'session_secret');
+  if (stored) return stored;
+
+  // Generate dynamic cryptographic secret
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  const newSecret = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+  await setSetting(db, 'session_secret', newSecret);
+  return newSecret;
+}
+
+export async function isSetupRequired(db: D1Database, envPass?: string): Promise<boolean> {
+  if (envPass && envPass.trim().length > 0) return false;
+  const hash = await getSetting(db, 'admin_password_hash');
+  return !hash || hash.trim().length === 0;
+}
+
+// -------------------------------------------------------------
+// TARGETS & HEALTH CHECKS
+// -------------------------------------------------------------
 
 const round1 = (v: number | null | undefined) => (v === null || v === undefined ? null : Math.round(v * 10) / 10);
 
@@ -338,7 +405,7 @@ export async function deleteSession(db: D1Database, id: string): Promise<void> {
  */
 export async function pruneMaintenance(db: D1Database, retentionDays: number = 31): Promise<void> {
   await initDatabase(db);
-  const days = Math.max(retentionDays, 31);
+  const days = Math.max(retentionDays, 7);
   const now = Math.floor(Date.now() / 1000);
 
   await db.batch([

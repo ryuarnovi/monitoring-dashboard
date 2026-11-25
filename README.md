@@ -68,7 +68,7 @@ flowchart TD
     end
 
     subgraph External Monitored VPS
-        Worker -.->|"HTTP / HTTPS Probe (Port 80/443)"| VPS1["VPS 01 (103.127.139.23)\nZero-Agent"]
+        Worker -.->|"HTTP / HTTPS Probe (Port 80/443)"| VPS1["VPS 01 (Web Node)\nZero-Agent"]
         Worker -.->|"External Health Check"| VPS2["VPS 02 (Production)\nZero-Agent"]
         Worker -.->|"TCP / HTTP Probe"| VPS3["VPS 03 (Staging)\nZero-Agent"]
     end
@@ -120,7 +120,7 @@ npm run d1:init
 Setel password admin dashboard menggunakan Cloudflare Secrets:
 ```bash
 npx wrangler secret put ADMIN_PASSWORD
-# Masukkan password Anda (misal: Workerkubabi@1234)
+# Masukkan password administrator pilihan Anda (min. 8 karakter)
 
 npx wrangler secret put SESSION_SECRET
 # Masukkan string acak untuk salt HMAC sesi

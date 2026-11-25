@@ -2,7 +2,8 @@ import { Env } from './types';
 import { 
   authorizeRequest, 
   verifyAdminPassword, 
-  createSessionToken 
+  createSessionToken,
+  sha256
 } from './auth';
 import { checkRateLimit, getClientIp, rateLimitHeaders } from './rate-limit';
 import { executeExternalProbe } from './prober';
@@ -17,10 +18,13 @@ import {
   deleteTarget,
   countTargets,
   saveSession,
+  getSetting,
+  setSetting,
+  getAllSettings,
+  isSetupRequired,
 } from './db';
-import { Target, DashboardOverview } from '../types';
+import { Target, DashboardOverview, SystemSettings } from '../types';
 
-const MAX_TARGETS = 10;
 const HOST_RE = /^(?=.{1,253}$)([a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)(\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/;
 const IPV4_RE = /^(25[0-5]|2[0-4]\d|1?\d?\d)(\.(25[0-5]|2[0-4]\d|1?\d?\d)){3}$/;
 
@@ -36,9 +40,12 @@ function json(data: unknown, status = 200, customHeaders: Record<string, string>
   });
 }
 
-export function latencyThreshold(env: Env): number {
-  const n = Number(env.LATENCY_DEGRADED_THRESHOLD_MS);
-  return Number.isFinite(n) && n > 0 ? n : 1000;
+export async function getDynamicThreshold(env: Env): Promise<number> {
+  const envVal = Number(env.LATENCY_DEGRADED_THRESHOLD_MS);
+  if (Number.isFinite(envVal) && envVal > 0) return envVal;
+  const dbVal = await getSetting(env.DB, 'latency_threshold_ms', '1000');
+  const parsed = Number(dbVal);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 1000;
 }
 
 function validateTargetInput(body: any): { target?: Omit<Target, 'created_at' | 'updated_at'>; error?: string } {
@@ -88,13 +95,83 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
   }
 
   // -------------------------------------------------------------
-  // 1. AUTHENTICATION & LOGIN ENDPOINTS (Throttled & Anti-Bypass)
+  // 1. PUBLIC SYSTEM SETTINGS & SETUP ENDPOINTS
+  // -------------------------------------------------------------
+
+  // GET /api/system/settings (Publicly accessible basic config)
+  if (path === '/api/system/settings' && method === 'GET') {
+    const settings = await getAllSettings(env.DB);
+    const setupNeeded = await isSetupRequired(env.DB, env.ADMIN_PASSWORD);
+    const threshold = await getDynamicThreshold(env);
+
+    const publicSettings: SystemSettings = {
+      app_title: settings.app_title || 'VPS Monitoring Dashboard',
+      latency_threshold_ms: threshold,
+      github_url: settings.github_url || '',
+      is_setup_required: setupNeeded,
+      login_rate_limit_max: Number(settings.login_rate_limit_max) || 5,
+      login_rate_limit_window: Number(settings.login_rate_limit_window) || 900,
+      probe_rate_limit_max: Number(settings.probe_rate_limit_max) || 10,
+      api_rate_limit_max: Number(settings.api_rate_limit_max) || 60,
+      max_targets: Number(settings.max_targets) || 15,
+      retention_days: Number(env.RETENTION_DAYS) || Number(settings.retention_days) || 30,
+      custom_user_agent: settings.custom_user_agent || '',
+    };
+
+    return json({ success: true, data: publicSettings });
+  }
+
+  // POST /api/auth/setup (Initial setup: only if password is not configured yet)
+  if (path === '/api/auth/setup' && method === 'POST') {
+    const setupNeeded = await isSetupRequired(env.DB, env.ADMIN_PASSWORD);
+    if (!setupNeeded) {
+      return json({ success: false, error: 'System is already initialized' }, 400);
+    }
+
+    const body = (await request.json().catch(() => null)) as any;
+    const password = String(body?.password ?? '').trim();
+    const appTitle = String(body?.app_title ?? '').trim() || 'VPS Monitoring Dashboard';
+    const githubUrl = String(body?.github_url ?? '').trim();
+
+    if (!password || password.length < 8) {
+      return json({ success: false, error: 'Password must be at least 8 characters long' }, 400);
+    }
+
+    const passwordHash = await sha256(password);
+    await setSetting(env.DB, 'admin_password_hash', passwordHash);
+    await setSetting(env.DB, 'app_title', appTitle);
+    if (githubUrl) {
+      await setSetting(env.DB, 'github_url', githubUrl);
+    }
+
+    // Automatically log in the admin
+    const sessionId = crypto.randomUUID();
+    const expiresAt = Math.floor(Date.now() / 1000) + 7 * 86400;
+    await saveSession(env.DB, sessionId, 'admin', expiresAt);
+    const token = await createSessionToken('admin', env);
+
+    const isHttps = url.protocol === 'https:';
+    const secureFlag = isHttps ? '; Secure' : '';
+    const cookieVal = `vps_auth_token=${encodeURIComponent(token)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800${secureFlag}`;
+
+    return json(
+      { success: true, message: 'System setup completed successfully', token },
+      200,
+      { 'Set-Cookie': cookieVal }
+    );
+  }
+
+  // -------------------------------------------------------------
+  // 2. AUTHENTICATION & LOGIN (Throttled & Anti-Bypass)
   // -------------------------------------------------------------
 
   // POST /api/auth/login
   if (path === '/api/auth/login' && method === 'POST') {
-    // Throttling: Max 5 attempts per 15 minutes (900 seconds)
-    const rl = await checkRateLimit(env.DB, `login_${clientIp}`, 5, 900);
+    // Dynamic login rate limits from DB
+    const loginMax = Number(await getSetting(env.DB, 'login_rate_limit_max', '5')) || 5;
+    const loginWindow = Number(await getSetting(env.DB, 'login_rate_limit_window', '900')) || 900;
+
+    const rl = await checkRateLimit(env.DB, `login_${clientIp}`, loginMax, loginWindow);
     const rlHeaders = rateLimitHeaders(rl);
 
     if (!rl.allowed) {
@@ -105,6 +182,19 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
           retry_after: rl.resetSeconds,
         },
         429,
+        rlHeaders
+      );
+    }
+
+    const setupNeeded = await isSetupRequired(env.DB, env.ADMIN_PASSWORD);
+    if (setupNeeded) {
+      return json(
+        {
+          success: false,
+          error: 'Initial setup required. Please configure the admin password.',
+          setup_required: true,
+        },
+        400,
         rlHeaders
       );
     }
@@ -125,14 +215,12 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
       );
     }
 
-    // Login successful: create session
+    // Login successful
     const sessionId = crypto.randomUUID();
     const expiresAt = Math.floor(Date.now() / 1000) + 7 * 86400; // 7 days
     await saveSession(env.DB, sessionId, 'admin', expiresAt);
-
     const token = await createSessionToken('admin', env);
 
-    // Set HTTP-only Cookie with SameSite protection
     const isHttps = url.protocol === 'https:';
     const secureFlag = isHttps ? '; Secure' : '';
     const cookieVal = `vps_auth_token=${encodeURIComponent(token)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800${secureFlag}`;
@@ -167,37 +255,49 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
 
   // GET /api/auth/me (Check current auth status)
   if (path === '/api/auth/me' && method === 'GET') {
+    const setupNeeded = await isSetupRequired(env.DB, env.ADMIN_PASSWORD);
+    if (setupNeeded) {
+      return json({
+        authenticated: false,
+        setup_required: true,
+      });
+    }
+
     const auth = await authorizeRequest(request, env);
     return json({
       authenticated: auth.ok,
       user: auth.user || null,
       method: auth.method || null,
+      setup_required: false,
     });
   }
 
   // -------------------------------------------------------------
-  // 2. AUTHORIZATION CHECK (MANDATORY FOR ALL REMAINING ROUTES)
+  // 3. AUTHORIZATION CHECK (MANDATORY FOR ALL REMAINING ROUTES)
   // -------------------------------------------------------------
   const auth = await authorizeRequest(request, env);
   if (!auth.ok) {
+    const setupNeeded = await isSetupRequired(env.DB, env.ADMIN_PASSWORD);
     return json(
       {
         success: false,
         error: 'Unauthorized: Access restricted',
         reason: auth.reason,
         requires_login: true,
+        setup_required: setupNeeded,
       },
       401
     );
   }
 
   // -------------------------------------------------------------
-  // 3. RATE LIMITING / THROTTLING FOR PROTECTED ACTIONS
+  // 4. RATE LIMITING / THROTTLING FOR PROTECTED ACTIONS
   // -------------------------------------------------------------
+  const probeMax = Number(await getSetting(env.DB, 'probe_rate_limit_max', '10')) || 10;
+  const apiMax = Number(await getSetting(env.DB, 'api_rate_limit_max', '60')) || 60;
 
-  // Manual probes throttling: Max 10 per 60 seconds
   if (path.includes('/probe') && method === 'POST') {
-    const probeRl = await checkRateLimit(env.DB, `probe_${clientIp}`, 10, 60);
+    const probeRl = await checkRateLimit(env.DB, `probe_${clientIp}`, probeMax, 60);
     if (!probeRl.allowed) {
       return json(
         {
@@ -210,8 +310,7 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
       );
     }
   } else {
-    // General API throttling: Max 60 requests per 60 seconds
-    const apiRl = await checkRateLimit(env.DB, `api_${clientIp}`, 60, 60);
+    const apiRl = await checkRateLimit(env.DB, `api_${clientIp}`, apiMax, 60);
     if (!apiRl.allowed) {
       return json(
         {
@@ -226,12 +325,17 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
   }
 
   // -------------------------------------------------------------
-  // 4. BUSINESS LOGIC & DATA ENDPOINTS
+  // 5. BUSINESS LOGIC & DATA ENDPOINTS
   // -------------------------------------------------------------
   const cf = ((request as any).cf || {}) as { colo?: string; country?: string; city?: string };
   const edgeColo = cf.colo || 'unknown';
-  const threshold = latencyThreshold(env);
-  const probeOpts = { colo: edgeColo, degradedLatencyThresholdMs: threshold };
+  const threshold = await getDynamicThreshold(env);
+  const customUserAgent = await getSetting(env.DB, 'custom_user_agent');
+  const probeOpts = { 
+    colo: edgeColo, 
+    degradedLatencyThresholdMs: threshold,
+    userAgent: customUserAgent || undefined
+  };
 
   try {
     // GET /api/overview
@@ -244,6 +348,8 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
         .filter((x): x is string => !!x)
         .sort()
         .pop();
+
+      const appTitle = await getSetting(env.DB, 'app_title', 'VPS Monitoring Dashboard');
 
       const overview: DashboardOverview = {
         total_targets: targets.length,
@@ -262,8 +368,42 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
         access_user: auth.user ?? null,
         auth_method: auth.method,
         latency_threshold_ms: threshold,
+        app_title: appTitle,
       };
       return json({ success: true, data: overview });
+    }
+
+    // PUT /api/system/settings (Update dynamic system settings)
+    if (path === '/api/system/settings' && method === 'PUT') {
+      const body = (await request.json().catch(() => ({}))) as any;
+
+      if (body.app_title !== undefined) {
+        await setSetting(env.DB, 'app_title', String(body.app_title).trim());
+      }
+      if (body.latency_threshold_ms !== undefined) {
+        const val = Number(body.latency_threshold_ms);
+        if (val > 0) await setSetting(env.DB, 'latency_threshold_ms', String(val));
+      }
+      if (body.github_url !== undefined) {
+        await setSetting(env.DB, 'github_url', String(body.github_url).trim());
+      }
+      if (body.custom_user_agent !== undefined) {
+        await setSetting(env.DB, 'custom_user_agent', String(body.custom_user_agent).trim());
+      }
+      if (body.retention_days !== undefined) {
+        const val = Number(body.retention_days);
+        if (val > 0) await setSetting(env.DB, 'retention_days', String(val));
+      }
+      if (body.max_targets !== undefined) {
+        const val = Number(body.max_targets);
+        if (val > 0) await setSetting(env.DB, 'max_targets', String(val));
+      }
+      if (body.new_admin_password && String(body.new_admin_password).length >= 8) {
+        const newHash = await sha256(String(body.new_admin_password).trim());
+        await setSetting(env.DB, 'admin_password_hash', newHash);
+      }
+
+      return json({ success: true, message: 'Settings updated successfully' });
     }
 
     // GET /api/targets
@@ -273,8 +413,9 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
 
     // POST /api/targets
     if (path === '/api/targets' && method === 'POST') {
-      if ((await countTargets(env.DB)) >= MAX_TARGETS) {
-        return json({ success: false, error: `Maximum of ${MAX_TARGETS} targets reached` }, 400);
+      const maxTargets = Number(await getSetting(env.DB, 'max_targets', '15')) || 15;
+      if ((await countTargets(env.DB)) >= maxTargets) {
+        return json({ success: false, error: `Maximum of ${maxTargets} targets reached` }, 400);
       }
       const body = await request.json().catch(() => null);
       const { target, error } = validateTargetInput(body);

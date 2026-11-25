@@ -1,7 +1,7 @@
 import { Env } from './types';
-import { handleApiRequest, latencyThreshold } from './api';
+import { handleApiRequest, getDynamicThreshold } from './api';
 import { executeExternalProbe } from './prober';
-import { getActiveTargets, recordCheckResult, pruneMaintenance } from './db';
+import { getActiveTargets, recordCheckResult, pruneMaintenance, getSetting } from './db';
 
 const SECURITY_HEADERS: Record<string, string> = {
   'X-Frame-Options': 'DENY',
@@ -28,28 +28,34 @@ async function detectColo(): Promise<string> {
   }
 }
 
-async function runScheduledProbes(env: Env, edgeColo?: string): Promise<void> {
+async function runScheduledProbes(env: Env): Promise<void> {
   const targets = await getActiveTargets(env.DB);
   if (targets.length === 0) {
     console.log('[cron] no active targets');
     return;
   }
-  // Prefer the PoP reported on the scheduled event; fall back to a trace lookup.
-  const colo = edgeColo || (await detectColo());
-  const threshold = latencyThreshold(env);
+  const colo = await detectColo();
+  const threshold = await getDynamicThreshold(env);
+  const customUserAgent = await getSetting(env.DB, 'custom_user_agent');
 
   const results = await Promise.allSettled(
     targets.map(async (t) => {
-      const r = await executeExternalProbe(t, { colo, degradedLatencyThresholdMs: threshold });
+      const r = await executeExternalProbe(t, { 
+        colo, 
+        degradedLatencyThresholdMs: threshold,
+        userAgent: customUserAgent || undefined
+      });
       await recordCheckResult(env.DB, r);
       console.log(`[cron] ${t.name} (${r.url}) -> ${r.status} code=${r.status_code} ${r.response_time_ms ?? '-'}ms via ${r.probe_method}@${colo}`);
     })
   );
   results.forEach((r) => r.status === 'rejected' && console.error('[cron] probe failed', r.reason));
 
-  // Light housekeeping roughly once an hour
+  // Maintenance: cleanup old logs, expired sessions, and expired rate limits
   if (new Date().getUTCMinutes() < 2) {
-    await pruneMaintenance(env.DB, Number(env.RETENTION_DAYS) || 31);
+    const dbRetention = Number(await getSetting(env.DB, 'retention_days', '30')) || 30;
+    const retentionDays = Number(env.RETENTION_DAYS) || dbRetention;
+    await pruneMaintenance(env.DB, retentionDays);
   }
 }
 
@@ -62,9 +68,7 @@ export default {
     return withSecurityHeaders(await env.ASSETS.fetch(request));
   },
 
-  async scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
-    // `cf` is present at runtime on scheduled events but omitted from older worker typings.
-    const colo = (event as ScheduledController & { cf?: { colo?: string } }).cf?.colo;
-    ctx.waitUntil(runScheduledProbes(env, colo).catch((err) => console.error('[cron] run failed', err)));
+  async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    ctx.waitUntil(runScheduledProbes(env).catch((err) => console.error('[cron] run failed', err)));
   },
 } satisfies ExportedHandler<Env>;

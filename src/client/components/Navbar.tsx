@@ -4,6 +4,7 @@ import { DashboardOverview } from '../../types';
 
 interface NavbarProps {
   overview: DashboardOverview | null;
+  appTitle?: string;
   isLoading: boolean;
   onRefreshAll: () => void;
   onOpenAddModal: () => void;
@@ -14,6 +15,7 @@ interface NavbarProps {
 
 export const Navbar: React.FC<NavbarProps> = ({
   overview,
+  appTitle,
   isLoading,
   onRefreshAll,
   onOpenAddModal,
@@ -21,11 +23,13 @@ export const Navbar: React.FC<NavbarProps> = ({
   autoRefreshInterval,
   setAutoRefreshInterval,
 }) => {
+  const displayTitle = appTitle || overview?.app_title || 'VPS Monitoring Dashboard';
+
   return (
     <header className="sticky top-0 z-40 bg-[#0E1322]/90 backdrop-blur-md border-b border-slate-800/80">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
         
-        {/* Left: Branding & Architecture Badge */}
+        {/* Left: Dynamic Branding & Architecture Badge */}
         <div className="flex items-center space-x-3">
           <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-orange-500 to-amber-600 flex items-center justify-center shadow-lg shadow-orange-500/20 ring-1 ring-orange-400/30">
             <Cloud className="w-6 h-6 text-white" />
@@ -33,7 +37,7 @@ export const Navbar: React.FC<NavbarProps> = ({
           <div>
             <div className="flex items-center space-x-2">
               <h1 className="text-base sm:text-lg font-bold text-white tracking-tight">
-                Cloudflare VPS Monitor
+                {displayTitle}
               </h1>
               <span className="hidden sm:inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
                 Zero-Agent

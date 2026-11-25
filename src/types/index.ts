@@ -74,6 +74,20 @@ export interface PaginatedResult<T> {
   pagination: PaginationMeta;
 }
 
+export interface SystemSettings {
+  app_title: string;
+  latency_threshold_ms: number;
+  github_url: string;
+  is_setup_required: boolean;
+  login_rate_limit_max: number;
+  login_rate_limit_window: number;
+  probe_rate_limit_max: number;
+  api_rate_limit_max: number;
+  max_targets: number;
+  retention_days: number;
+  custom_user_agent: string;
+}
+
 export interface DashboardOverview {
   total_targets: number;
   online_count: number;
@@ -91,6 +105,7 @@ export interface DashboardOverview {
   access_user?: string | null;
   auth_method?: string;
   latency_threshold_ms: number;
+  app_title?: string;
 }
 
 export interface ProbeResult {

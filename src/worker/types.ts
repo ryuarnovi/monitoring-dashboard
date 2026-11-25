@@ -11,7 +11,7 @@ export interface Env {
   CF_ACCESS_AUD?: string;
   /** Set to "true" ONLY for temporary testing without Cloudflare Access or password. */
   ALLOW_UNAUTHENTICATED?: string;
-  /** Dashboard Admin Password (anti-bypass protection). Default: Workerkubabi@1234 or configured secret */
+  /** Dashboard Admin Password (anti-bypass protection). Configured via secret or D1 setup wizard */
   ADMIN_PASSWORD?: string;
   /** Secret key for HMAC session tokens. */
   SESSION_SECRET?: string;

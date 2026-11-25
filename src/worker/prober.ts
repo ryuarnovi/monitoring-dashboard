@@ -5,9 +5,10 @@ export interface ProberOptions {
   colo?: string | null;
   defaultTimeoutMs?: number;
   degradedLatencyThresholdMs?: number;
+  userAgent?: string;
 }
 
-const USER_AGENT = 'Cloudflare-ZeroAgent-Probe/1.0 (+https://github.com/ryuarnovi/monitoring-dashboard)';
+const DEFAULT_USER_AGENT = 'Cloudflare-ZeroAgent-Probe/1.0 (+https://developers.cloudflare.com/workers/)';
 
 function isIpAddress(host: string): boolean {
   return /^\d{1,3}(\.\d{1,3}){3}$/.test(host) || host.includes(':');
@@ -30,7 +31,7 @@ interface RawOutcome {
 }
 
 /** Standard probe via fetch(). Used for DNS hostnames. */
-async function probeViaFetch(url: string, timeoutMs: number): Promise<RawOutcome> {
+async function probeViaFetch(url: string, timeoutMs: number, userAgent: string): Promise<RawOutcome> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   const start = Date.now();
@@ -39,7 +40,7 @@ async function probeViaFetch(url: string, timeoutMs: number): Promise<RawOutcome
       method: 'GET',
       signal: controller.signal,
       redirect: 'manual',
-      headers: { 'User-Agent': USER_AGENT, Accept: '*/*', 'Cache-Control': 'no-cache' },
+      headers: { 'User-Agent': userAgent, Accept: '*/*', 'Cache-Control': 'no-cache' },
     });
     const elapsedMs = Date.now() - start;
     await res.body?.cancel();
@@ -57,11 +58,9 @@ async function probeViaFetch(url: string, timeoutMs: number): Promise<RawOutcome
 
 /**
  * Probe via raw TCP socket (cloudflare:sockets).
- * Workers' fetch() cannot target bare IP addresses, so IP targets are checked by
- * opening a TCP connection and sending a minimal HTTP/1.1 request. The elapsed
- * time covers TCP connect + time to the first response line.
+ * Used when probing IP addresses directly since fetch() requires DNS hostnames.
  */
-async function probeViaSocket(target: Target, timeoutMs: number): Promise<RawOutcome> {
+async function probeViaSocket(target: Target, timeoutMs: number, userAgent: string): Promise<RawOutcome> {
   const start = Date.now();
   const cleanPath = target.path.startsWith('/') ? target.path : `/${target.path}`;
   let socket: ReturnType<typeof connect> | null = null;
@@ -77,7 +76,7 @@ async function probeViaSocket(target: Target, timeoutMs: number): Promise<RawOut
     const request =
       `GET ${cleanPath} HTTP/1.1\r\n` +
       `Host: ${target.host}\r\n` +
-      `User-Agent: ${USER_AGENT}\r\n` +
+      `User-Agent: ${userAgent}\r\n` +
       `Accept: */*\r\n` +
       `Connection: close\r\n\r\n`;
     await writer.write(new TextEncoder().encode(request));
@@ -133,11 +132,12 @@ async function probeViaSocket(target: Target, timeoutMs: number): Promise<RawOut
 export async function executeExternalProbe(target: Target, options: ProberOptions = {}): Promise<ProbeResult> {
   const timeoutMs = target.timeout_ms || options.defaultTimeoutMs || 5000;
   const degradedThresholdMs = options.degradedLatencyThresholdMs || 1000;
+  const userAgent = options.userAgent || DEFAULT_USER_AGENT;
   const url = buildUrl(target);
 
   const outcome = isIpAddress(target.host)
-    ? await probeViaSocket(target, timeoutMs)
-    : await probeViaFetch(url, timeoutMs);
+    ? await probeViaSocket(target, timeoutMs, userAgent)
+    : await probeViaFetch(url, timeoutMs, userAgent);
 
   const { statusCode } = outcome;
   let errorMessage = outcome.error;
@@ -164,7 +164,6 @@ export async function executeExternalProbe(target: Target, options: ProberOption
     url,
     status,
     status_code: statusCode,
-    // An offline probe has no meaningful latency value
     response_time_ms: statusCode === null ? null : responseTimeMs,
     colo: options.colo || 'unknown',
     error_message: errorMessage,

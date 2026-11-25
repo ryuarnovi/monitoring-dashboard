@@ -1,18 +1,16 @@
 import { Env } from './types';
+import { getSetting, getOrGenerateSessionSecret } from './db';
 
 /**
  * Cloudflare VPS Monitor Authentication & Anti-Bypass Security Engine.
  *
- * Implements Multi-Layer Security:
+ * Implements Multi-Layer Dynamic Security:
  * 1. Cloudflare Access (Zero Trust) JWT signature verification
- * 2. Cryptographic HMAC-SHA256 Session Tokens in HTTP-Only Cookies
- * 3. Secure Admin Password with Brute-Force Throttling
+ * 2. Cryptographic HMAC-SHA256 Session Tokens in HTTP-Only Cookies (dynamic per-instance salt)
+ * 3. Secure Admin Password with Brute-Force Throttling (dynamic from Secrets or D1)
  *
- * Prevents unauthorized access or bypass even if the worker URL is hit directly.
+ * ZERO HARDCODED PASSWORDS OR SECRETS.
  */
-
-const DEFAULT_ADMIN_PASS = 'Workerkubabi@1234';
-const DEFAULT_SECRET_SALT = 'cf-vps-monitoring-hmac-secret-salt-2025';
 
 export interface AuthResult {
   ok: boolean;
@@ -62,10 +60,10 @@ export async function sha256(message: string): Promise<string> {
 }
 
 /**
- * Creates an HMAC-SHA256 signed session token
+ * Creates an HMAC-SHA256 signed session token with dynamic salt
  */
 export async function createSessionToken(username: string, env: Env): Promise<string> {
-  const secret = env.SESSION_SECRET || DEFAULT_SECRET_SALT;
+  const secret = await getOrGenerateSessionSecret(env.DB, env.SESSION_SECRET);
   const now = Math.floor(Date.now() / 1000);
   const exp = now + 7 * 86400; // 7 days expiration
 
@@ -91,7 +89,7 @@ export async function createSessionToken(username: string, env: Env): Promise<st
 }
 
 /**
- * Verifies an HMAC-SHA256 signed session token
+ * Verifies an HMAC-SHA256 signed session token with dynamic salt
  */
 export async function verifySessionToken(token: string, env: Env): Promise<{ valid: boolean; user?: string }> {
   try {
@@ -100,7 +98,7 @@ export async function verifySessionToken(token: string, env: Env): Promise<{ val
 
     const [headerB64, payloadB64, signatureB64] = parts;
     const message = `${headerB64}.${payloadB64}`;
-    const secret = env.SESSION_SECRET || DEFAULT_SECRET_SALT;
+    const secret = await getOrGenerateSessionSecret(env.DB, env.SESSION_SECRET);
 
     const key = await crypto.subtle.importKey(
       'raw',
@@ -133,14 +131,25 @@ export async function verifySessionToken(token: string, env: Env): Promise<{ val
 }
 
 /**
- * Validates admin password
+ * Validates admin password against environment secrets or D1 settings table.
+ * NO HARDCODED PASSWORD!
  */
 export async function verifyAdminPassword(password: string, env: Env): Promise<boolean> {
-  const expectedPassword = env.ADMIN_PASSWORD || DEFAULT_ADMIN_PASS;
-  // Constant time comparison via SHA-256 hash comparison
-  const hashEntered = await sha256(password);
-  const hashExpected = await sha256(expectedPassword);
-  return hashEntered === hashExpected;
+  const enteredHash = await sha256(password);
+
+  // 1. Check environment variable (highest priority)
+  if (env.ADMIN_PASSWORD && env.ADMIN_PASSWORD.trim().length > 0) {
+    const expectedHash = await sha256(env.ADMIN_PASSWORD.trim());
+    return enteredHash === expectedHash;
+  }
+
+  // 2. Check D1 settings table
+  const storedHash = await getSetting(env.DB, 'admin_password_hash');
+  if (storedHash && storedHash.trim().length > 0) {
+    return enteredHash === storedHash.trim();
+  }
+
+  return false;
 }
 
 /**
