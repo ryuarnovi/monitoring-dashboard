@@ -1,5 +1,5 @@
 import React from 'react';
-import { Cloud, Activity, RefreshCw, Plus, ShieldCheck, Lock, Globe } from 'lucide-react';
+import { Cloud, Activity, RefreshCw, Plus, ShieldCheck, Lock, Globe, LogOut } from 'lucide-react';
 import { DashboardOverview } from '../../types';
 
 interface NavbarProps {
@@ -7,6 +7,7 @@ interface NavbarProps {
   isLoading: boolean;
   onRefreshAll: () => void;
   onOpenAddModal: () => void;
+  onLogout: () => Promise<void>;
   autoRefreshInterval: number;
   setAutoRefreshInterval: (interval: number) => void;
 }
@@ -16,6 +17,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   isLoading,
   onRefreshAll,
   onOpenAddModal,
+  onLogout,
   autoRefreshInterval,
   setAutoRefreshInterval,
 }) => {
@@ -38,13 +40,13 @@ export const Navbar: React.FC<NavbarProps> = ({
               </span>
             </div>
             <p className="text-xs text-slate-400 hidden sm:block">
-              External Edge Probes via Cloudflare Workers & D1
+              External Edge Probes via Cloudflare Workers &amp; D1
             </p>
           </div>
         </div>
 
         {/* Right: Edge Colo Badge, Cloudflare Access Status & Actions */}
-        <div className="flex items-center space-x-2 sm:space-x-4">
+        <div className="flex items-center space-x-2 sm:space-x-3">
           
           {/* Edge Colocation Location */}
           {overview?.edge_location && (
@@ -56,10 +58,10 @@ export const Navbar: React.FC<NavbarProps> = ({
             </div>
           )}
 
-          {/* Cloudflare Access Protection Indicator */}
-          <div className="hidden lg:flex items-center space-x-1 px-2.5 py-1 rounded-lg bg-blue-950/40 border border-blue-800/40 text-xs text-blue-300">
+          {/* Cloudflare Access / Session Indicator */}
+          <div className="hidden lg:flex items-center space-x-1.5 px-2.5 py-1 rounded-lg bg-blue-950/40 border border-blue-800/40 text-xs text-blue-300">
             <Lock className="w-3 h-3 text-blue-400" />
-            <span>CF Access</span>
+            <span>{overview?.auth_method === 'cf_access' ? 'CF Access' : 'Session Authed'}</span>
           </div>
 
           {/* Auto Refresh Selector */}
@@ -94,7 +96,16 @@ export const Navbar: React.FC<NavbarProps> = ({
             className="px-3 py-1.5 rounded-lg bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 text-white font-medium text-xs shadow-md shadow-orange-500/20 flex items-center space-x-1.5 transition active:scale-95"
           >
             <Plus className="w-3.5 h-3.5" />
-            <span>Add VPS</span>
+            <span className="hidden sm:inline">Add VPS</span>
+          </button>
+
+          {/* Logout Button */}
+          <button
+            onClick={onLogout}
+            title="Sign out of dashboard"
+            className="p-2 rounded-lg bg-slate-800 hover:bg-rose-950/60 text-slate-400 hover:text-rose-400 border border-slate-700 transition text-xs flex items-center"
+          >
+            <LogOut className="w-3.5 h-3.5" />
           </button>
 
         </div>

@@ -60,6 +60,20 @@ export interface LatencyPoint {
   colo?: string | null;
 }
 
+export interface PaginationMeta {
+  page: number;
+  limit: number;
+  total_records: number;
+  total_pages: number;
+  has_next: boolean;
+  has_prev: boolean;
+}
+
+export interface PaginatedResult<T> {
+  items: T[];
+  pagination: PaginationMeta;
+}
+
 export interface DashboardOverview {
   total_targets: number;
   online_count: number;
@@ -75,6 +89,7 @@ export interface DashboardOverview {
   };
   last_scan_time: string | null;
   access_user?: string | null;
+  auth_method?: string;
   latency_threshold_ms: number;
 }
 

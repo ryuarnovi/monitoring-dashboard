@@ -1,5 +1,6 @@
 -- Cloudflare D1 Database Schema for Zero-Agent VPS Monitoring
--- Supports external-only HTTP/HTTPS probes, latency metrics, and downtime history.
+-- Supports external-only HTTP/HTTPS probes, latency metrics, downtime history,
+-- anti-bypass session management, and sliding-window rate limiting.
 
 CREATE TABLE IF NOT EXISTS targets (
   id TEXT PRIMARY KEY,
@@ -38,6 +39,21 @@ CREATE TABLE IF NOT EXISTS incidents (
   FOREIGN KEY (target_id) REFERENCES targets(id) ON DELETE CASCADE
 );
 
+-- Anti-bypass active session store
+CREATE TABLE IF NOT EXISTS sessions (
+  id TEXT PRIMARY KEY,
+  user TEXT NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  expires_at INTEGER NOT NULL
+);
+
+-- Request throttling & sliding window rate limiter
+CREATE TABLE IF NOT EXISTS rate_limits (
+  key TEXT PRIMARY KEY,
+  count INTEGER NOT NULL,
+  reset_at INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL,
@@ -49,9 +65,11 @@ CREATE INDEX IF NOT EXISTS idx_checks_target_timestamp ON health_checks(target_i
 CREATE INDEX IF NOT EXISTS idx_checks_timestamp ON health_checks(timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_incidents_target ON incidents(target_id, start_time DESC);
 CREATE INDEX IF NOT EXISTS idx_incidents_status ON incidents(status);
+CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
+CREATE INDEX IF NOT EXISTS idx_rate_limits_reset ON rate_limits(reset_at);
 
--- Seed default initial target VPS nodes (including user's target node)
+-- Seed default initial target VPS nodes
 INSERT OR IGNORE INTO targets (id, name, host, port, protocol, path, expected_status, timeout_ms, is_active)
 VALUES 
   ('vps-01-prod', 'VPS-01 Production Node', '103.127.139.23', 80, 'http', '/', 200, 5000, 1),
-  ('cf-edge-probe', 'Cloudflare Edge Gateway', '1.1.1.1', 443, 'https', '/dns-query?name=cloudflare.com', 200, 3000, 1);
+  ('cf-edge-probe', 'Cloudflare DNS Edge', '1.1.1.1', 443, 'https', '/dns-query?name=cloudflare.com', 200, 3000, 1);

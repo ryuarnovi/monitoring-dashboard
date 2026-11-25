@@ -1,30 +1,29 @@
 import React from 'react';
-import { 
-  ShieldCheck, 
-  Cloud, 
-  Cpu, 
-  Database, 
-  Lock, 
-  Terminal, 
-  ExternalLink, 
-  CheckCircle2, 
-  Layers, 
-  Globe, 
+import {
+  ShieldCheck,
+  Cloud,
+  Cpu,
+  Database,
+  Lock,
+  Terminal,
+  Layers,
   Zap,
-  Server
+  ShieldAlert,
+  Sliders,
+  ListFilter
 } from 'lucide-react';
 
 export const ArchitectureGuide: React.FC = () => {
   return (
     <div className="space-y-6">
-      
+
       {/* Zero Agent Philosophy Banner */}
       <div className="bg-gradient-to-r from-orange-950/40 via-[#111726] to-[#111726] border border-orange-500/30 rounded-2xl p-6 shadow-xl relative overflow-hidden">
         <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
           <div className="space-y-2 max-w-2xl">
             <div className="inline-flex items-center space-x-1.5 px-2.5 py-1 rounded-full bg-orange-500/10 border border-orange-500/30 text-orange-400 text-xs font-semibold">
               <ShieldCheck className="w-4 h-4" />
-              <span>100% Zero-Agent Architecture</span>
+              <span>100% Zero-Agent Architecture &amp; Anti-Bypass Security</span>
             </div>
             <h2 className="text-xl sm:text-2xl font-bold text-white tracking-tight">
               External Edge Probes via Cloudflare Global Network
@@ -41,39 +40,39 @@ export const ArchitectureGuide: React.FC = () => {
         </div>
       </div>
 
-      {/* Architecture Building Blocks */}
+      {/* Security & Anti-Bypass Features */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        
-        {/* Block 1: Cloudflare Cron & Workers */}
-        <div className="bg-[#111726] border border-slate-800/90 rounded-2xl p-5 hover:border-slate-700 transition">
-          <div className="w-10 h-10 rounded-xl bg-orange-500/10 border border-orange-500/20 text-orange-400 flex items-center justify-center mb-4">
-            <Zap className="w-5 h-5" />
-          </div>
-          <h3 className="text-base font-bold text-white mb-2">Cloudflare Cron Triggers</h3>
-          <p className="text-xs text-slate-400 leading-relaxed">
-            Cron triggers fire every 1–2 minutes across Cloudflare’s worldwide edge. Workers execute non-intrusive HTTP/HTTPS probes concurrently, measuring true user-facing latency and status.
-          </p>
-        </div>
 
-        {/* Block 2: Cloudflare D1 Database */}
-        <div className="bg-[#111726] border border-slate-800/90 rounded-2xl p-5 hover:border-slate-700 transition">
-          <div className="w-10 h-10 rounded-xl bg-sky-500/10 border border-sky-500/20 text-sky-400 flex items-center justify-center mb-4">
-            <Database className="w-5 h-5" />
-          </div>
-          <h3 className="text-base font-bold text-white mb-2">Cloudflare D1 Storage</h3>
-          <p className="text-xs text-slate-400 leading-relaxed">
-            Zero-latency edge SQLite database stores target configs, time-series latency points, 24h/7d/30d uptime calculations, and downtime incident logs with automated recovery detection.
-          </p>
-        </div>
-
-        {/* Block 3: Cloudflare Zero Trust Access */}
+        {/* Feature 1: Anti-Bypass Login */}
         <div className="bg-[#111726] border border-slate-800/90 rounded-2xl p-5 hover:border-slate-700 transition">
           <div className="w-10 h-10 rounded-xl bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 flex items-center justify-center mb-4">
             <Lock className="w-5 h-5" />
           </div>
-          <h3 className="text-base font-bold text-white mb-2">Cloudflare Access Security</h3>
+          <h3 className="text-base font-bold text-white mb-2">Authentication</h3>
           <p className="text-xs text-slate-400 leading-relaxed">
-            Protect <code className="text-orange-400 font-mono">monitor.DOMAIN.COM</code> using Cloudflare Zero Trust Access. Only authorized team emails or SSO can reach the dashboard, eliminating attack surfaces.
+            Direct hits to the Worker or custom domain are gated by multi-layer authentication. Supports Cloudflare Zero Trust Access JWT validation and HMAC-SHA256 encrypted session tokens stored in secure HTTP-Only cookies.
+          </p>
+        </div>
+
+        {/* Feature 2: Throttling & Rate Limiting */}
+        <div className="bg-[#111726] border border-slate-800/90 rounded-2xl p-5 hover:border-slate-700 transition">
+          <div className="w-10 h-10 rounded-xl bg-orange-500/10 border border-orange-500/20 text-orange-400 flex items-center justify-center mb-4">
+            <Sliders className="w-5 h-5" />
+          </div>
+          <h3 className="text-base font-bold text-white mb-2">Sliding-Window Throttling</h3>
+          <p className="text-xs text-slate-400 leading-relaxed">
+            D1-backed rate limiting protects endpoints: brute-force login limiter (max 5 attempts / 15 mins), probe trigger limiter (max 10 / min), and general API limiter (max 60 / min) with IETF 429 Retry-After headers.
+          </p>
+        </div>
+
+        {/* Feature 3: Server-side Pagination */}
+        <div className="bg-[#111726] border border-slate-800/90 rounded-2xl p-5 hover:border-slate-700 transition">
+          <div className="w-10 h-10 rounded-xl bg-sky-500/10 border border-sky-500/20 text-sky-400 flex items-center justify-center mb-4">
+            <ListFilter className="w-5 h-5" />
+          </div>
+          <h3 className="text-base font-bold text-white mb-2">Server-Side Pagination</h3>
+          <p className="text-xs text-slate-400 leading-relaxed">
+            Incident logs and history are queried with indexed SQL pagination (LIMIT / OFFSET), delivering sub-millisecond response times even across tens of thousands of downtime records.
           </p>
         </div>
 
@@ -99,15 +98,15 @@ export const ArchitectureGuide: React.FC = () => {
         </div>
       </div>
 
-      {/* Deployment & Setup Checklist */}
+      {/* Production Deployment Steps */}
       <div className="bg-[#111726] border border-slate-800/90 rounded-2xl p-6">
         <h3 className="text-base font-bold text-white mb-4 flex items-center space-x-2">
           <Terminal className="w-5 h-5 text-orange-400" />
-          <span>Production Deployment Steps (Cloudflare CLI)</span>
+          <span>Production Deployment Steps (Cloudflare CLI &amp; Wrangler)</span>
         </h3>
 
         <div className="space-y-4 text-xs font-mono">
-          
+
           {/* Step 1 */}
           <div className="p-3 bg-slate-900 rounded-xl border border-slate-800">
             <div className="flex items-center space-x-2 text-slate-300 font-sans font-medium mb-1.5">
@@ -126,7 +125,7 @@ export const ArchitectureGuide: React.FC = () => {
           <div className="p-3 bg-slate-900 rounded-xl border border-slate-800">
             <div className="flex items-center space-x-2 text-slate-300 font-sans font-medium mb-1.5">
               <span className="w-5 h-5 rounded-full bg-orange-500/20 text-orange-400 flex items-center justify-center text-xs font-bold font-mono">2</span>
-              <span>Apply D1 Database Schema Migration</span>
+              <span>Execute D1 Database Schema Migrations</span>
             </div>
             <pre className="text-orange-300 bg-black/40 p-2.5 rounded-lg overflow-x-auto">
               npx wrangler d1 execute vps_monitor_db --remote --file=./migrations/0001_initial_schema.sql
@@ -137,10 +136,10 @@ export const ArchitectureGuide: React.FC = () => {
           <div className="p-3 bg-slate-900 rounded-xl border border-slate-800">
             <div className="flex items-center space-x-2 text-slate-300 font-sans font-medium mb-1.5">
               <span className="w-5 h-5 rounded-full bg-orange-500/20 text-orange-400 flex items-center justify-center text-xs font-bold font-mono">3</span>
-              <span>Build Frontend SPA &amp; Deploy Worker</span>
+              <span>Configure Admin Password Secret</span>
             </div>
             <pre className="text-orange-300 bg-black/40 p-2.5 rounded-lg overflow-x-auto">
-              npm run build &amp;&amp; npx wrangler deploy
+              npx wrangler secret put ADMIN_PASSWORD
             </pre>
           </div>
 
@@ -148,21 +147,21 @@ export const ArchitectureGuide: React.FC = () => {
           <div className="p-3 bg-slate-900 rounded-xl border border-slate-800">
             <div className="flex items-center space-x-2 text-slate-300 font-sans font-medium mb-1.5">
               <span className="w-5 h-5 rounded-full bg-orange-500/20 text-orange-400 flex items-center justify-center text-xs font-bold font-mono">4</span>
-              <span>Bind Custom Subdomain (monitor.DOMAIN.COM)</span>
+              <span>Build Frontend &amp; Deploy Worker</span>
             </div>
-            <p className="text-slate-300 font-sans text-xs">
-              In Cloudflare Dashboard &rarr; <strong>Workers &amp; Pages</strong> &rarr; <code className="text-orange-400">cloudflare-vps-monitoring</code> &rarr; <strong>Settings &rarr; Domains &amp; Routes</strong> &rarr; Click <strong>Add &rarr; Custom Domain</strong> &rarr; Enter <code className="text-orange-400">monitor.DOMAIN.COM</code>.
-            </p>
+            <pre className="text-orange-300 bg-black/40 p-2.5 rounded-lg overflow-x-auto">
+              npm run build &amp;&amp; npx wrangler deploy
+            </pre>
           </div>
 
           {/* Step 5 */}
           <div className="p-3 bg-slate-900 rounded-xl border border-slate-800">
             <div className="flex items-center space-x-2 text-slate-300 font-sans font-medium mb-1.5">
               <span className="w-5 h-5 rounded-full bg-orange-500/20 text-orange-400 flex items-center justify-center text-xs font-bold font-mono">5</span>
-              <span>Enable Cloudflare Zero Trust Access</span>
+              <span>Bind Custom Subdomain (https://monitor.DOMAIN.COM)</span>
             </div>
             <p className="text-slate-300 font-sans text-xs">
-              Go to <strong>Zero Trust</strong> &rarr; <strong>Access</strong> &rarr; <strong>Applications</strong> &rarr; Add <code className="text-orange-400">monitor.DOMAIN.COM</code> &rarr; Configure an allow-list policy with your email or One-Time Pin.
+              Go to Cloudflare Dashboard &rarr; <strong>Workers &amp; Pages</strong> &rarr; <code className="text-orange-400">cloudflare-vps-monitoring</code> &rarr; <strong>Settings &rarr; Domains &amp; Routes</strong> &rarr; Add Custom Domain: <code className="text-orange-400">monitor.DOMAIN.COM</code>.
             </p>
           </div>
 

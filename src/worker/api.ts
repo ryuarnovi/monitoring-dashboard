@@ -1,5 +1,10 @@
 import { Env } from './types';
-import { authorizeRequest } from './auth';
+import { 
+  authorizeRequest, 
+  verifyAdminPassword, 
+  createSessionToken 
+} from './auth';
+import { checkRateLimit, getClientIp, rateLimitHeaders } from './rate-limit';
 import { executeExternalProbe } from './prober';
 import {
   getAllTargetsWithStats,
@@ -7,10 +12,11 @@ import {
   getTargetById,
   recordCheckResult,
   getTargetLatencyHistory,
-  getIncidents,
+  getIncidentsPaginated,
   createTarget,
   deleteTarget,
   countTargets,
+  saveSession,
 } from './db';
 import { Target, DashboardOverview } from '../types';
 
@@ -18,13 +24,14 @@ const MAX_TARGETS = 10;
 const HOST_RE = /^(?=.{1,253}$)([a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)(\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/;
 const IPV4_RE = /^(25[0-5]|2[0-4]\d|1?\d?\d)(\.(25[0-5]|2[0-4]\d|1?\d?\d)){3}$/;
 
-function json(data: unknown, status = 200): Response {
+function json(data: unknown, status = 200, customHeaders: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(data), {
     status,
     headers: {
       'Content-Type': 'application/json; charset=utf-8',
       'Cache-Control': 'no-store',
       'X-Content-Type-Options': 'nosniff',
+      ...customHeaders,
     },
   });
 }
@@ -70,22 +77,164 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
   const url = new URL(request.url);
   const path = url.pathname;
   const method = request.method;
+  const clientIp = getClientIp(request);
 
-  const auth = await authorizeRequest(request, env);
-  if (!auth.ok) return json({ success: false, error: 'Unauthorized', reason: auth.reason }, 401);
-
-  // Basic CSRF protection for state-changing requests: same-origin only
+  // Cross-Origin check for state-changing operations
   if (method !== 'GET' && method !== 'HEAD') {
     const origin = request.headers.get('Origin');
-    if (origin && origin !== url.origin) return json({ success: false, error: 'Cross-origin request rejected' }, 403);
+    if (origin && origin !== url.origin) {
+      return json({ success: false, error: 'Cross-origin request rejected' }, 403);
+    }
   }
 
+  // -------------------------------------------------------------
+  // 1. AUTHENTICATION & LOGIN ENDPOINTS (Throttled & Anti-Bypass)
+  // -------------------------------------------------------------
+
+  // POST /api/auth/login
+  if (path === '/api/auth/login' && method === 'POST') {
+    // Throttling: Max 5 attempts per 15 minutes (900 seconds)
+    const rl = await checkRateLimit(env.DB, `login_${clientIp}`, 5, 900);
+    const rlHeaders = rateLimitHeaders(rl);
+
+    if (!rl.allowed) {
+      return json(
+        {
+          success: false,
+          error: `Too many login attempts. Please wait ${rl.resetSeconds} seconds before trying again.`,
+          retry_after: rl.resetSeconds,
+        },
+        429,
+        rlHeaders
+      );
+    }
+
+    const body = (await request.json().catch(() => null)) as any;
+    const password = String(body?.password ?? '');
+
+    const isValid = await verifyAdminPassword(password, env);
+    if (!isValid) {
+      return json(
+        {
+          success: false,
+          error: 'Invalid administrator password',
+          remaining_attempts: rl.remaining,
+        },
+        401,
+        rlHeaders
+      );
+    }
+
+    // Login successful: create session
+    const sessionId = crypto.randomUUID();
+    const expiresAt = Math.floor(Date.now() / 1000) + 7 * 86400; // 7 days
+    await saveSession(env.DB, sessionId, 'admin', expiresAt);
+
+    const token = await createSessionToken('admin', env);
+
+    // Set HTTP-only Cookie with SameSite protection
+    const isHttps = url.protocol === 'https:';
+    const secureFlag = isHttps ? '; Secure' : '';
+    const cookieVal = `vps_auth_token=${encodeURIComponent(token)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800${secureFlag}`;
+
+    return json(
+      {
+        success: true,
+        message: 'Authenticated successfully',
+        user: 'admin',
+        token,
+      },
+      200,
+      {
+        'Set-Cookie': cookieVal,
+        ...rlHeaders,
+      }
+    );
+  }
+
+  // POST /api/auth/logout
+  if (path === '/api/auth/logout' && method === 'POST') {
+    const isHttps = url.protocol === 'https:';
+    const secureFlag = isHttps ? '; Secure' : '';
+    const clearCookie = `vps_auth_token=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0${secureFlag}`;
+
+    return json(
+      { success: true, message: 'Logged out successfully' },
+      200,
+      { 'Set-Cookie': clearCookie }
+    );
+  }
+
+  // GET /api/auth/me (Check current auth status)
+  if (path === '/api/auth/me' && method === 'GET') {
+    const auth = await authorizeRequest(request, env);
+    return json({
+      authenticated: auth.ok,
+      user: auth.user || null,
+      method: auth.method || null,
+    });
+  }
+
+  // -------------------------------------------------------------
+  // 2. AUTHORIZATION CHECK (MANDATORY FOR ALL REMAINING ROUTES)
+  // -------------------------------------------------------------
+  const auth = await authorizeRequest(request, env);
+  if (!auth.ok) {
+    return json(
+      {
+        success: false,
+        error: 'Unauthorized: Access restricted',
+        reason: auth.reason,
+        requires_login: true,
+      },
+      401
+    );
+  }
+
+  // -------------------------------------------------------------
+  // 3. RATE LIMITING / THROTTLING FOR PROTECTED ACTIONS
+  // -------------------------------------------------------------
+
+  // Manual probes throttling: Max 10 per 60 seconds
+  if (path.includes('/probe') && method === 'POST') {
+    const probeRl = await checkRateLimit(env.DB, `probe_${clientIp}`, 10, 60);
+    if (!probeRl.allowed) {
+      return json(
+        {
+          success: false,
+          error: `Probe rate limit exceeded. Please wait ${probeRl.resetSeconds}s.`,
+          retry_after: probeRl.resetSeconds,
+        },
+        429,
+        rateLimitHeaders(probeRl)
+      );
+    }
+  } else {
+    // General API throttling: Max 60 requests per 60 seconds
+    const apiRl = await checkRateLimit(env.DB, `api_${clientIp}`, 60, 60);
+    if (!apiRl.allowed) {
+      return json(
+        {
+          success: false,
+          error: `API rate limit exceeded. Please wait ${apiRl.resetSeconds}s.`,
+          retry_after: apiRl.resetSeconds,
+        },
+        429,
+        rateLimitHeaders(apiRl)
+      );
+    }
+  }
+
+  // -------------------------------------------------------------
+  // 4. BUSINESS LOGIC & DATA ENDPOINTS
+  // -------------------------------------------------------------
   const cf = ((request as any).cf || {}) as { colo?: string; country?: string; city?: string };
   const edgeColo = cf.colo || 'unknown';
   const threshold = latencyThreshold(env);
   const probeOpts = { colo: edgeColo, degradedLatencyThresholdMs: threshold };
 
   try {
+    // GET /api/overview
     if (path === '/api/overview' && method === 'GET') {
       const targets = await getAllTargetsWithStats(env.DB);
       const withUptime = targets.filter((t) => t.uptime_24h !== null && t.uptime_24h !== undefined);
@@ -110,16 +259,19 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
           : null,
         edge_location: { colo: edgeColo, country: cf.country || 'unknown', city: cf.city },
         last_scan_time: lastScan ?? null,
-        access_user: auth.email ?? null,
+        access_user: auth.user ?? null,
+        auth_method: auth.method,
         latency_threshold_ms: threshold,
       };
       return json({ success: true, data: overview });
     }
 
+    // GET /api/targets
     if (path === '/api/targets' && method === 'GET') {
       return json({ success: true, data: await getAllTargetsWithStats(env.DB) });
     }
 
+    // POST /api/targets
     if (path === '/api/targets' && method === 'POST') {
       if ((await countTargets(env.DB)) >= MAX_TARGETS) {
         return json({ success: false, error: `Maximum of ${MAX_TARGETS} targets reached` }, 400);
@@ -134,18 +286,21 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
       return json({ success: true, id: target.id, data: probe }, 201);
     }
 
+    // DELETE /api/targets/:id
     const deleteMatch = path.match(/^\/api\/targets\/([\w-]+)$/);
     if (deleteMatch && method === 'DELETE') {
       await deleteTarget(env.DB, deleteMatch[1]);
-      return json({ success: true });
+      return json({ success: true, message: 'Target removed' });
     }
 
+    // GET /api/targets/:id/history
     const historyMatch = path.match(/^\/api\/targets\/([\w-]+)\/history$/);
     if (historyMatch && method === 'GET') {
       const hours = parseInt(url.searchParams.get('hours') || '24', 10) || 24;
       return json({ success: true, data: await getTargetLatencyHistory(env.DB, historyMatch[1], hours) });
     }
 
+    // POST /api/targets/:id/probe (Instant on-demand external probe)
     const probeMatch = path.match(/^\/api\/targets\/([\w-]+)\/probe$/);
     if (probeMatch && method === 'POST') {
       const target = await getTargetById(env.DB, probeMatch[1]);
@@ -155,6 +310,7 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
       return json({ success: true, data: result });
     }
 
+    // POST /api/probes/run-all (Trigger external probe across all targets)
     if (path === '/api/probes/run-all' && method === 'POST') {
       const targets = await getActiveTargets(env.DB);
       const results = await Promise.all(
@@ -167,15 +323,24 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
       return json({ success: true, scanned_count: results.length, data: results });
     }
 
+    // GET /api/incidents (SERVER-SIDE PAGINATION)
     if (path === '/api/incidents' && method === 'GET') {
+      const page = Math.max(1, parseInt(url.searchParams.get('page') || '1', 10));
+      const limit = Math.min(100, Math.max(1, parseInt(url.searchParams.get('limit') || '10', 10)));
       const targetId = url.searchParams.get('target_id') || undefined;
-      const limit = parseInt(url.searchParams.get('limit') || '50', 10) || 50;
-      return json({ success: true, data: await getIncidents(env.DB, limit, targetId) });
+
+      const paginated = await getIncidentsPaginated(env.DB, page, limit, targetId);
+
+      return json({
+        success: true,
+        data: paginated.items,
+        pagination: paginated.pagination,
+      });
     }
 
     return json({ success: false, error: 'Endpoint not found' }, 404);
   } catch (err: any) {
-    console.error('[API] error', err);
+    console.error('[API] error:', err);
     return json({ success: false, error: 'Internal Server Error' }, 500);
   }
 }

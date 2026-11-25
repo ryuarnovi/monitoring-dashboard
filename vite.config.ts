@@ -6,8 +6,15 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     emptyOutDir: true,
-    // Recharts is loaded on demand (see the lazy LatencyChart import in App.tsx).
-    chunkSizeWarningLimit: 600,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          vendor: ['react', 'react-dom'],
+          recharts: ['recharts'],
+          lucide: ['lucide-react'],
+        },
+      },
+    },
   },
   server: {
     port: 3000,

@@ -1,24 +1,21 @@
-import React, { useState, useEffect, useCallback, lazy, Suspense } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Target, DashboardOverview } from '../types';
 import { Navbar } from './components/Navbar';
 import { SummaryCards } from './components/SummaryCards';
 import { ServerCard } from './components/ServerCard';
+import { LatencyChart } from './components/LatencyChart';
 import { IncidentHistory } from './components/IncidentHistory';
 import { AddServerModal } from './components/AddServerModal';
 import { ArchitectureGuide } from './components/ArchitectureGuide';
+import { LoginScreen } from './components/LoginScreen';
 import { apiFetch } from './format';
 import { Server, ShieldAlert, Terminal, Plus, CheckCircle2, ExternalLink, Info, Lock } from 'lucide-react';
-
-// Recharts is heavy; only load it when the user opens the latency chart.
-const LatencyChart = lazy(async () => {
-  const m = await import('./components/LatencyChart');
-  return { default: m.LatencyChart };
-});
 
 type Tab = 'servers' | 'incidents' | 'architecture';
 type Toast = { message: string; type: 'success' | 'info' | 'error' };
 
 export const App: React.FC = () => {
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean | null>(null);
   const [overview, setOverview] = useState<DashboardOverview | null>(null);
   const [servers, setServers] = useState<Target[]>([]);
   const [chartServer, setChartServer] = useState<Target | null>(null);
@@ -36,6 +33,23 @@ export const App: React.FC = () => {
     window.setTimeout(() => setToast(null), 4000);
   };
 
+  const checkAuth = async () => {
+    try {
+      const res = await fetch('/api/auth/me', { credentials: 'same-origin' });
+      const data = (await res.json().catch(() => ({}))) as any;
+      if (res.ok && data.authenticated) {
+        setIsAuthenticated(true);
+        return true;
+      } else {
+        setIsAuthenticated(false);
+        return false;
+      }
+    } catch {
+      setIsAuthenticated(false);
+      return false;
+    }
+  };
+
   const fetchData = useCallback(async () => {
     try {
       const [o, t] = await Promise.all([
@@ -45,25 +59,48 @@ export const App: React.FC = () => {
       setOverview(o.data);
       setServers(t.data || []);
       setLoadError(null);
+      setIsAuthenticated(true);
     } catch (e: any) {
-      // Never substitute mock data: show the real error instead.
-      setLoadError(e.message || 'Unable to reach the monitoring API');
+      if (e.message?.includes('Unauthorized') || e.message?.includes('401')) {
+        setIsAuthenticated(false);
+      } else {
+        setLoadError(e.message || 'Unable to reach the monitoring API');
+      }
     } finally {
       setIsLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    fetchData();
+    checkAuth().then((authed) => {
+      if (authed) {
+        fetchData();
+      } else {
+        setIsLoading(false);
+      }
+    });
   }, [fetchData]);
 
   useEffect(() => {
-    if (!refreshMs) return;
+    if (!refreshMs || !isAuthenticated) return;
     const id = window.setInterval(() => {
       if (document.visibilityState === 'visible') fetchData();
     }, refreshMs);
     return () => window.clearInterval(id);
-  }, [refreshMs, fetchData]);
+  }, [refreshMs, isAuthenticated, fetchData]);
+
+  const handleLogout = async () => {
+    try {
+      await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' });
+    } catch {
+      /* ignore */
+    } finally {
+      setIsAuthenticated(false);
+      setOverview(null);
+      setServers([]);
+      notify('Signed out', 'info');
+    }
+  };
 
   const handleProbeNow = async (id: string) => {
     setProbingId(id);
@@ -109,6 +146,11 @@ export const App: React.FC = () => {
     }
   };
 
+  // If auth state is still determining or false, show login screen
+  if (isAuthenticated === false) {
+    return <LoginScreen onLoginSuccess={() => { setIsAuthenticated(true); fetchData(); }} />;
+  }
+
   const threshold = overview?.latency_threshold_ms ?? 1000;
 
   const tabBtn = (id: Tab, icon: React.ReactNode, label: string) => (
@@ -124,12 +166,13 @@ export const App: React.FC = () => {
   );
 
   return (
-    <div className="min-h-screen bg-[#0B0F19] text-slate-100 flex flex-col font-sans">
+    <div className="min-h-screen bg-[#0B0F19] text-slate-100 flex flex-col font-sans selection:bg-orange-500 selection:text-white">
       <Navbar
         overview={overview}
         isLoading={isProbingAll}
         onRefreshAll={handleProbeAll}
         onOpenAddModal={() => setIsAddOpen(true)}
+        onLogout={handleLogout}
         autoRefreshInterval={refreshMs}
         setAutoRefreshInterval={setRefreshMs}
       />
@@ -168,7 +211,7 @@ export const App: React.FC = () => {
         <div className="flex items-center justify-between border-b border-slate-800/80 mb-6 overflow-x-auto">
           <div className="flex space-x-1 sm:space-x-3">
             {tabBtn('servers', <Server className="w-4 h-4" />, `Nodes (${servers.length})`)}
-            {tabBtn('incidents', <ShieldAlert className="w-4 h-4" />, 'Incidents')}
+            {tabBtn('incidents', <ShieldAlert className="w-4 h-4" />, 'Incidents (Paginated)')}
             {tabBtn('architecture', <Terminal className="w-4 h-4" />, 'Setup Guide')}
           </div>
           {overview?.access_user && (
@@ -180,7 +223,7 @@ export const App: React.FC = () => {
           (isLoading ? (
             <div className="py-24 text-center text-slate-500">
               <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-orange-500 mx-auto mb-3" />
-              <p className="text-sm">Loading…</p>
+              <p className="text-sm">Connecting to Cloudflare Workers &amp; D1...</p>
             </div>
           ) : servers.length === 0 && !loadError ? (
             <div className="py-20 text-center bg-[#111726] border border-slate-800 rounded-2xl p-8">
@@ -217,11 +260,7 @@ export const App: React.FC = () => {
         {tab === 'architecture' && <ArchitectureGuide />}
       </main>
 
-      {chartServer && (
-        <Suspense fallback={null}>
-          <LatencyChart server={chartServer} latencyThresholdMs={threshold} onClose={() => setChartServer(null)} />
-        </Suspense>
-      )}
+      {chartServer && <LatencyChart server={chartServer} latencyThresholdMs={threshold} onClose={() => setChartServer(null)} />}
 
       <AddServerModal
         isOpen={isAddOpen}

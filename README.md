@@ -1,105 +1,218 @@
-# Cloudflare VPS Monitoring Dashboard
+# Cloudflare VPS Monitoring Dashboard (Zero-Agent Architecture)
 
-Dashboard monitoring VPS **zero-agent**, ringan, dan aman, yang berjalan sepenuhnya di infrastruktur Cloudflare. Tidak ada agen, daemon, exporter, atau software apa pun yang dipasang pada VPS yang dipantau — semua pengukuran dilakukan dari luar (external-only) oleh Cloudflare Workers.
+[![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers-F38020?style=flat&logo=cloudflare&logoColor=white)](https://workers.cloudflare.com/)
+[![Cloudflare D1](https://img.shields.io/badge/Cloudflare-D1_Database-F38020?style=flat&logo=cloudflare&logoColor=white)](https://developers.cloudflare.com/d1/)
+[![React](https://img.shields.io/badge/React-18-61DAFB?style=flat&logo=react&logoColor=black)](https://react.dev/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?style=flat&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![Tailwind CSS](https://img.shields.io/badge/Tailwind_CSS-3-38B2AC?style=flat&logo=tailwind-css&logoColor=white)](https://tailwindcss.com/)
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-## Prinsip
+Dashboard monitoring VPS terpusat, modern, ringan, aman, dan responsif yang beroperasi **100% pada infrastruktur Cloudflare (Edge)**. 
 
-- **Zero-agent** — nol jejak pada VPS target.
-- **External monitoring only** — HTTP/HTTPS probe dari Cloudflare edge.
-- **Tidak ada angka palsu** — CPU / RAM / Disk ditampilkan sebagai *Not available — requires internal metrics*.
-- **HTTP latency, bukan ICMP ping** — metrik disebut secara eksplisit sebagai HTTP response time.
-- **Secure by default** — dilindungi Cloudflare Access + verifikasi JWT di Worker.
+Dirancang dengan prinsip **Zero-Agent Monitoring**: VPS yang dimonitor sama sekali **tidak dipasangi agent, daemon, exporter, ataupun software tambahan apa pun**. Semua pengecekan dilakukan murni secara eksternal melalui jaringan edge global Cloudflare.
 
-## Arsitektur
+---
 
-| Komponen | Fungsi |
-| --- | --- |
-| Cloudflare Workers | API + static SPA + logika probe |
-| Cron Trigger | Probe tiap 2 menit (`*/2 * * * *`) |
-| D1 (`vps_monitor_db`) | Target, health checks, insiden, metrik uptime |
-| Cloudflare Access | Proteksi `monitor.DOMAIN.COM` (Zero Trust) |
-| React + Tailwind + Recharts + Lucide | Dashboard responsif |
+## Fitur Utama
 
-Alur: Cron/API → `executeExternalProbe()` → `recordCheckResult()` → D1 → endpoint API → dashboard.
+### 1. Uptime Monitoring (Zero-Agent External Checks)
+- Pemeriksaan berkala HTTP dan HTTPS dari edge Cloudflare.
+- Klasifikasi status otomatis:
+  - **Online**: Layanan merespons status 2xx/3xx dalam latensi normal.
+  - **Degraded**: Latensi tinggi (> threshold e.g. 1000ms) atau respons HTTP 4xx.
+  - **Offline**: Connection timeout, connection refused, atau HTTP server error 5xx.
+- Perhitungan persentase Uptime akurat untuk **24 Jam**, **7 Hari**, dan **30 Hari**.
+- Pelacakan insiden downtime otomatis: mencatat waktu mulai, waktu pemulihan, durasi, dan penyebab kendala.
 
-## Fitur
+### 2. Latency Monitoring (HTTP Response Time)
+- Pengukuran akurat *round-trip HTTP response time* (bukan ICMP ping).
+- Menampilkan metrik **Minimum**, **Average**, dan **Maximum Latency** dalam 24 jam.
+- Grafik visual interaktif dengan **Recharts** (mendukung rentang waktu 1 Jam, 6 Jam, 24 Jam, 7 Hari, dan 30 Hari).
+- Indikator peringatan visual saat terjadi lonjakan latensi (*High Latency Indicator*).
 
-- Uptime 24 jam / 7 hari / 30 hari (dihitung dari data nyata; `null` bila belum ada data).
-- Status **online / degraded / offline** + HTTP status code + error message.
-- HTTP latency: min / avg / max + grafik (1H, 6H, 24H, 7D, 30D) + penanda threshold *high*.
-- Riwayat insiden otomatis (dibuka saat gagal/degraded, ditutup saat sehat lagi).
-- Indikator PoP Cloudflare tempat probe dijalankan.
-- CPU / RAM / Disk: **Not available — Requires internal metrics** (disengaja).
-- Network: **external HTTP reachability** (bukan ICMP).
+### 3. Kebijakan Integritas Metrik Internal (CPU, RAM, Disk)
+- Sesuai prinsip **Zero-Agent Monitoring**, sistem **tidak membuat angka palsu atau estimasi fiktif**.
+- Metrik CPU, RAM, dan Disk secara transparan ditampilkan sebagai:
+  > **Not available • Requires internal metrics**
+- Memberikan kepastian bahwa VPS target bersih dari overhead pemantauan dan kebal terhadap eksploitasi agent pihak ketiga.
 
-## Development
+### 4. Keamanan Anti-Bypass & Akses Terkontrol
+- **Anti-Bypass Protection**: Mengamankan dashboard agar tidak dapat diakses atau di-bypass secara sembarangan meskipun diakses melalui URL worker langsung.
+- **Dual-Layer Authentication**:
+  1. **Cloudflare Zero Trust Access**: Verifikasi kriptografis token JWT (`Cf-Access-Jwt-Assertion`) jika diaktifkan pada subdomain.
+  2. **Dashboard Session Token**: Token sesi terenkripsi HMAC-SHA256 yang disimpan dalam HTTP-Only Cookie (`SameSite=Lax`, `Secure`).
+- **Brute-Force Protection**: Form login dilindungi pembatasan percobaan gagal.
 
-```bash
-npm install
-npm run d1:init          # inisialisasi schema D1 lokal
-npm run dev              # frontend di http://localhost:3000 (proxy /api → :8787)
-npm run worker:dev       # Worker + API di http://localhost:8787
+### 5. Throttling & Sliding-Window Rate Limiting
+- Proteksi berbasis database Cloudflare D1 terhadap penyalahgunaan API dan brute force:
+  - **Login Attempt**: Maksimal 5 percobaan per 15 menit per IP. Jika terlampaui, IP dikunci sementara (HTTP 429).
+  - **Manual Probe**: Maksimal 10 trigger per menit per IP untuk mencegah *probe flooding*.
+  - **General API**: Maksimal 60 request per menit per IP.
+- Mengirimkan header standar IETF: `Retry-After`, `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`.
+
+### 6. Server-Side Pagination
+- Riwayat insiden dan downtime dikelola dengan paginasi berbasis SQL (`LIMIT` dan `OFFSET`).
+- Navigasi halaman cepat, responsif, dan ringan tanpa membebani memori browser.
+
+---
+
+## Arsitektur Sistem
+
+```mermaid
+flowchart TD
+    subgraph Cloudflare Global Edge
+        Cron["Cloudflare Cron Triggers\n(Every 2 mins)"] --> Worker["Cloudflare Workers\n(Prober & API Router)"]
+        Client["Browser Client\n(React SPA)"] --> Access["Cloudflare Access / Session Gate\n(Anti-Bypass Auth)"]
+        Access --> Worker
+        Worker <--> D1[("Cloudflare D1 Database\n(SQLite at Edge)")]
+    end
+
+    subgraph External Monitored VPS
+        Worker -.->|"HTTP / HTTPS Probe (Port 80/443)"| VPS1["VPS 01 (103.127.139.23)\nZero-Agent"]
+        Worker -.->|"External Health Check"| VPS2["VPS 02 (Production)\nZero-Agent"]
+        Worker -.->|"TCP / HTTP Probe"| VPS3["VPS 03 (Staging)\nZero-Agent"]
+    end
 ```
 
-Pada localhost, otorisasi otomatis diizinkan untuk development.
+---
 
-## Deployment ke production
+## Panduan Instalasi & Deploy ke Cloudflare
 
-1. **Buat database D1**
+### Prasyarat
+- Node.js v18+ dan npm
+- Akun Cloudflare aktif
+- Cloudflare CLI `wrangler` terinstall (`npx wrangler`)
 
+### Langkah 1: Clone & Install Dependencies
+```bash
+git clone https://github.com/ryuarnovi/monitoring-dashboard.git
+cd monitoring-dashboard
+npm install
+```
+
+### Langkah 2: Buat Database Cloudflare D1
+Jalankan perintah berikut untuk membuat database D1 di akun Cloudflare Anda:
+```bash
+npx wrangler d1 create vps_monitor_db
+```
+Salin `database_id` yang dihasilkan, lalu buka file `wrangler.jsonc` dan perbarui baris `database_id`:
+```jsonc
+"d1_databases": [
+  {
+    "binding": "DB",
+    "database_name": "vps_monitor_db",
+    "database_id": "MASUKKAN_DATABASE_ID_ANDA_DISINI"
+  }
+]
+```
+
+### Langkah 3: Eksekusi Migrasi Skema Database D1
+Terapkan tabel `targets`, `health_checks`, `incidents`, `sessions`, dan `rate_limits` ke database D1:
+```bash
+# Untuk produksi (Cloudflare Remote D1):
+npm run d1:init:prod
+
+# Untuk pengujian lokal:
+npm run d1:init
+```
+
+### Langkah 4: Konfigurasi Password Admin (Anti-Bypass Secret)
+Setel password admin dashboard menggunakan Cloudflare Secrets:
+```bash
+npx wrangler secret put ADMIN_PASSWORD
+# Masukkan password Anda (misal: Workerkubabi@1234)
+
+npx wrangler secret put SESSION_SECRET
+# Masukkan string acak untuk salt HMAC sesi
+```
+
+### Langkah 5: Build Frontend & Deploy ke Cloudflare Workers
+```bash
+npm run worker:deploy
+```
+Perintah ini akan secara otomatis:
+1. Mem-build Single Page Application (React + Vite + Tailwind CSS) ke folder `./dist`.
+2. Mengunggah aset statis dan Worker ke jaringan Cloudflare Edge.
+3. Mengaktifkan Cloudflare Cron Trigger (`*/2 * * * *`).
+
+### Langkah 6: Hubungkan Subdomain Pribadi
+Untuk mengakses dashboard melalui subdomain Anda (misalnya `https://monitor.DOMAIN.COM`):
+1. Masuk ke **Cloudflare Dashboard** &rarr; **Workers & Pages**.
+2. Pilih worker **`cloudflare-vps-monitoring`**.
+3. Buka tab **Settings** &rarr; **Domains & Routes** &rarr; Klik **Add** &rarr; **Custom Domain**.
+4. Masukkan subdomain: `monitor.DOMAIN.COM`.
+5. Cloudflare DNS akan mengonfigurasi DNS record dan menerbitkan sertifikat SSL/TLS otomatis!
+
+### Langkah 7 (Opsional): Proteksi dengan Cloudflare Zero Trust Access
+1. Masuk ke **Cloudflare Zero Trust Dashboard** &rarr; **Access** &rarr; **Applications**.
+2. Klik **Add an Application** &rarr; Pilih **Self-hosted**.
+3. Masukkan domain `monitor.DOMAIN.COM`.
+4. Konfigurasikan kebijakan akses (Access Policy), misalnya izinkan hanya alamat email tim Anda.
+5. Salin Application AUD tag dan masukkan ke secret Worker:
    ```bash
-   npx wrangler d1 create vps_monitor_db
+   npx wrangler secret put CF_ACCESS_AUD
+   npx wrangler secret put CF_ACCESS_TEAM_DOMAIN
    ```
 
-   Salin `database_id` yang dihasilkan ke `wrangler.jsonc`, mengganti nilai
-   `vps-monitor-d1-placeholder`.
+---
 
-2. **Terapkan schema**
+## Struktur Folder Proyek
 
-   ```bash
-   npm run d1:init:prod
-   ```
+```
+monitoring/
+├── migrations/
+│   └── 0001_initial_schema.sql      # Skema tabel D1 (targets, checks, incidents, sessions, rate_limits)
+├── src/
+│   ├── types/
+│   │   └── index.ts                 # Definisi tipe TypeScript bersama
+│   ├── worker/
+│   │   ├── index.ts                 # Worker entrypoint (Fetch & Scheduled Cron handler)
+│   │   ├── api.ts                   # REST API router & middleware
+│   │   ├── auth.ts                  # Anti-bypass auth (HMAC sessions & Cloudflare Access)
+│   │   ├── rate-limit.ts            # Throttling & sliding-window rate limiter
+│   │   ├── prober.ts                # External probe engine (Fetch & Raw Socket fallback)
+│   │   ├── db.ts                    # D1 query helpers & paginasi
+│   │   └── types.ts                 # Interface Worker Env bindings
+│   └── client/
+│       ├── main.tsx                 # Entrypoint React 18
+│       ├── App.tsx                  # Dashboard container & state controller
+│       ├── format.ts                # Utility format tanggal & API fetcher
+│       ├── components/
+│       │   ├── Navbar.tsx           # Header, live colo indicator & logout
+│       │   ├── LoginScreen.tsx      # Anti-bypass modern login screen
+│       │   ├── SummaryCards.tsx     # Overview metrik node & rata-rata latensi
+│       │   ├── ServerCard.tsx       # Kartu VPS (Status, HTTP code, uptime, zero-agent hardware note)
+│       │   ├── LatencyChart.tsx     # Grafik latensi Recharts (1h, 6h, 24h, 7d, 30d)
+│       │   ├── IncidentHistory.tsx  # Tabel downtime dengan server-side pagination
+│       │   ├── AddServerModal.tsx   # Modal tambah node VPS target
+│       │   └── ArchitectureGuide.tsx# Panduan teknis & arsitektur Zero-Agent
+├── index.html                       # HTML wrapper aplikasi
+├── package.json                     # Definisi dependensi & skrip build
+├── tailwind.config.js               # Konfigurasi Tailwind CSS
+├── vite.config.ts                   # Konfigurasi Vite & rollup chunks
+└── wrangler.jsonc                   # Konfigurasi Cloudflare Workers & D1 bindings
+```
 
-3. **Set secret / env var Cloudflare Access** (wajib untuk produksi)
+---
 
-   ```bash
-   npx wrangler secret put CF_ACCESS_TEAM_DOMAIN   # mis. myteam.cloudflareaccess.com
-   npx wrangler secret put CF_ACCESS_AUD           # Application Audience (AUD) tag
-   ```
+## Ringkasan Endpoint API
 
-   Opsional: `LATENCY_DEGRADED_THRESHOLD_MS` (default `1000`) dan `RETENTION_DAYS` (default `31`).
-   `ALLOW_UNAUTHENTICATED=true` **hanya** untuk testing sementara — jangan dipakai di produksi.
+| Method | Endpoint | Keterangan | Proteksi |
+| :--- | :--- | :--- | :--- |
+| `POST` | `/api/auth/login` | Login admin, membuat sesi HMAC & cookie | Throttled (5x/15m) |
+| `POST` | `/api/auth/logout`| Keluar sesi & hapus cookie | Bebas |
+| `GET`  | `/api/auth/me`    | Cek status autentikasi aktif | Bebas |
+| `GET`  | `/api/overview`   | Ringkasan status seluruh infrastruktur | Authed + Throttled (60/m) |
+| `GET`  | `/api/targets`    | Daftar seluruh node VPS & uptime 24h/7d/30d | Authed + Throttled (60/m) |
+| `POST` | `/api/targets`    | Menambahkan node VPS baru ke pemantauan | Authed + Throttled (60/m) |
+| `DELETE`| `/api/targets/:id`| Menghapus node VPS dari pemantauan | Authed + Throttled (60/m) |
+| `GET`  | `/api/targets/:id/history?hours=24` | Data time-series latensi untuk grafik | Authed + Throttled (60/m) |
+| `POST` | `/api/targets/:id/probe` | Menjalankan probe eksternal instan | Authed + Throttled (10/m) |
+| `POST` | `/api/probes/run-all` | Menjalankan probe ke seluruh node sekaligus | Authed + Throttled (10/m) |
+| `GET`  | `/api/incidents?page=1&limit=10` | Riwayat insiden dengan server-side pagination | Authed + Throttled (60/m) |
 
-4. **Build & deploy**
+---
 
-   ```bash
-   npm run build
-   npx wrangler deploy
-   ```
+## Lisensi
 
-5. **Custom domain** — di Cloudflare Dashboard → Workers & Pages → `cloudflare-vps-monitoring` → Settings → Domains & Routes → Add Custom Domain → `monitor.DOMAIN.COM`.
-
-6. **Aktifkan Cloudflare Access** — Zero Trust → Access → Applications → tambahkan `monitor.DOMAIN.COM` dengan policy allow-list (email / OTP / SSO).
-
-> Catatan: Worker juga dapat dijangka lewat `*.workers.dev`. Verifikasi JWT di `src/worker/auth.ts` mencegah akses tanpa Access melalui URL tersebut.
-
-## Endpoint API
-
-Semua endpoint diawali otorisasi dan mengembalikan `{ success, data | error }`.
-
-| Method | Path | Keterangan |
-| --- | --- | --- |
-| GET | `/api/overview` | Ringkasan global |
-| GET | `/api/targets` | Semua target + statistik |
-| POST | `/api/targets` | Tambah target (langsung diprobe) |
-| DELETE | `/api/targets/:id` | Hapus target + riwayatnya |
-| GET | `/api/targets/:id/history?hours=24` | Histori latency |
-| POST | `/api/targets/:id/probe` | Probe satu target sekarang |
-| POST | `/api/probes/run-all` | Probe semua target |
-| GET | `/api/incidents?limit=50` | Riwayat insiden |
-
-## catatan keamanan
-
-- VPS target **tidak memerlukan akses SSH** apa pun untuk sistem ini. Jangan memasang agen atau membuka port tambahan.
-- Rotasi kredensial apa pun yang pernah dibagikan melalui chat/log.
-- Batasi maksimal target melalui `MAX_TARGETS` di `src/worker/api.ts` (default 10).
+Didistribusikan di bawah lisensi MIT. Bebas digunakan untuk kebutuhan personal maupun komersial.

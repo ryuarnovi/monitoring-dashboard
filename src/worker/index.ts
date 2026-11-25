@@ -1,7 +1,7 @@
 import { Env } from './types';
 import { handleApiRequest, latencyThreshold } from './api';
 import { executeExternalProbe } from './prober';
-import { getActiveTargets, recordCheckResult, pruneOldChecks } from './db';
+import { getActiveTargets, recordCheckResult, pruneMaintenance } from './db';
 
 const SECURITY_HEADERS: Record<string, string> = {
   'X-Frame-Options': 'DENY',
@@ -49,7 +49,7 @@ async function runScheduledProbes(env: Env, edgeColo?: string): Promise<void> {
 
   // Light housekeeping roughly once an hour
   if (new Date().getUTCMinutes() < 2) {
-    await pruneOldChecks(env.DB, Number(env.RETENTION_DAYS) || 31);
+    await pruneMaintenance(env.DB, Number(env.RETENTION_DAYS) || 31);
   }
 }
 

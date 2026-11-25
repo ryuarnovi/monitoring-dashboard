@@ -1,10 +1,16 @@
-import { Target, Incident, LatencyPoint, ProbeResult, TargetStatus } from '../types';
+import { 
+  Target, 
+  Incident, 
+  LatencyPoint, 
+  ProbeResult, 
+  TargetStatus,
+  PaginatedResult 
+} from '../types';
 
 let schemaReady = false;
 
 /**
- * Ensures tables exist. Production should apply migrations/0001_initial_schema.sql,
- * this is a safety net so a fresh database works on first request.
+ * Ensures tables exist in Cloudflare D1.
  */
 export async function initDatabase(db: D1Database): Promise<void> {
   if (schemaReady) return;
@@ -43,10 +49,23 @@ export async function initDatabase(db: D1Database): Promise<void> {
       status TEXT NOT NULL CHECK(status IN ('ongoing', 'resolved')) DEFAULT 'ongoing',
       FOREIGN KEY (target_id) REFERENCES targets(id) ON DELETE CASCADE
     )`),
+    db.prepare(`CREATE TABLE IF NOT EXISTS sessions (
+      id TEXT PRIMARY KEY,
+      user TEXT NOT NULL,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      expires_at INTEGER NOT NULL
+    )`),
+    db.prepare(`CREATE TABLE IF NOT EXISTS rate_limits (
+      key TEXT PRIMARY KEY,
+      count INTEGER NOT NULL,
+      reset_at INTEGER NOT NULL
+    )`),
     db.prepare(`CREATE INDEX IF NOT EXISTS idx_checks_target_timestamp ON health_checks(target_id, timestamp DESC)`),
     db.prepare(`CREATE INDEX IF NOT EXISTS idx_checks_timestamp ON health_checks(timestamp DESC)`),
     db.prepare(`CREATE INDEX IF NOT EXISTS idx_incidents_target ON incidents(target_id, start_time DESC)`),
     db.prepare(`CREATE INDEX IF NOT EXISTS idx_incidents_status ON incidents(status)`),
+    db.prepare(`CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at)`),
+    db.prepare(`CREATE INDEX IF NOT EXISTS idx_rate_limits_reset ON rate_limits(reset_at)`),
   ]);
   schemaReady = true;
 }
@@ -54,7 +73,7 @@ export async function initDatabase(db: D1Database): Promise<void> {
 const round1 = (v: number | null | undefined) => (v === null || v === undefined ? null : Math.round(v * 10) / 10);
 
 const uptimePercent = (total: number | null | undefined, ok: number | null | undefined): number | null => {
-  if (!total) return null; // no data -> unknown, never assume 100%
+  if (!total) return null;
   return Math.round(((ok ?? 0) / total) * 1000) / 10;
 };
 
@@ -69,7 +88,10 @@ export async function getActiveTargets(db: D1Database): Promise<Target[]> {
   return res.results || [];
 }
 
-/** All targets with live status, uptime (24h/7d/30d) and 24h latency statistics. */
+/** 
+ * Retrieves all monitored targets along with live stats:
+ * 24h, 7d, 30d uptime percentages and min/avg/max latency
+ */
 export async function getAllTargetsWithStats(db: D1Database): Promise<Target[]> {
   await initDatabase(db);
   const targets = (await db.prepare('SELECT * FROM targets ORDER BY created_at ASC').all<Target>()).results || [];
@@ -134,7 +156,9 @@ export async function getAllTargetsWithStats(db: D1Database): Promise<Target[]> 
 
 const newId = (prefix: string) => `${prefix}_${crypto.randomUUID()}`;
 
-/** Stores a probe result and opens/resolves downtime incidents automatically. */
+/** 
+ * Stores probe result and updates incident log
+ */
 export async function recordCheckResult(db: D1Database, result: ProbeResult): Promise<void> {
   await db
     .prepare(
@@ -203,14 +227,58 @@ export async function getTargetLatencyHistory(db: D1Database, targetId: string, 
   }));
 }
 
-export async function getIncidents(db: D1Database, limit = 50, targetId?: string): Promise<Incident[]> {
+/**
+ * Server-side paginated incidents retrieval
+ */
+export async function getIncidentsPaginated(
+  db: D1Database,
+  page: number = 1,
+  limit: number = 10,
+  targetId?: string
+): Promise<PaginatedResult<Incident>> {
   await initDatabase(db);
-  const safeLimit = Math.min(Math.max(limit, 1), 500);
-  const base = `SELECT i.*, t.name AS target_name FROM incidents i JOIN targets t ON i.target_id = t.id`;
-  const stmt = targetId
-    ? db.prepare(`${base} WHERE i.target_id = ? ORDER BY i.start_time DESC LIMIT ?`).bind(targetId, safeLimit)
-    : db.prepare(`${base} ORDER BY i.start_time DESC LIMIT ?`).bind(safeLimit);
-  return (await stmt.all<Incident>()).results || [];
+  const safePage = Math.max(1, page);
+  const safeLimit = Math.min(Math.max(1, limit), 100);
+  const offset = (safePage - 1) * safeLimit;
+
+  let countSql = `SELECT COUNT(*) as total FROM incidents`;
+  let dataSql = `SELECT i.*, t.name AS target_name FROM incidents i JOIN targets t ON i.target_id = t.id`;
+
+  let total = 0;
+  let items: Incident[] = [];
+
+  if (targetId) {
+    countSql += ` WHERE target_id = ?`;
+    dataSql += ` WHERE i.target_id = ? ORDER BY i.start_time DESC LIMIT ? OFFSET ?`;
+
+    const countRow = await db.prepare(countSql).bind(targetId).first<{ total: number }>();
+    total = countRow?.total ?? 0;
+
+    const dataRes = await db.prepare(dataSql).bind(targetId, safeLimit, offset).all<Incident>();
+    items = dataRes.results || [];
+  } else {
+    dataSql += ` ORDER BY i.start_time DESC LIMIT ? OFFSET ?`;
+
+    const countRow = await db.prepare(countSql).first<{ total: number }>();
+    total = countRow?.total ?? 0;
+
+    const dataRes = await db.prepare(dataSql).bind(safeLimit, offset).all<Incident>();
+    items = dataRes.results || [];
+  }
+
+  const totalPages = Math.max(1, Math.ceil(total / safeLimit));
+
+  return {
+    items,
+    pagination: {
+      page: safePage,
+      limit: safeLimit,
+      total_records: total,
+      total_pages: totalPages,
+      has_next: safePage < totalPages,
+      has_prev: safePage > 1,
+    },
+  };
 }
 
 export async function countTargets(db: D1Database): Promise<number> {
@@ -242,7 +310,6 @@ export async function createTarget(db: D1Database, target: Omit<Target, 'created
 
 export async function deleteTarget(db: D1Database, targetId: string): Promise<void> {
   await initDatabase(db);
-  // D1 does not enforce FK cascades unless PRAGMA foreign_keys is on, so delete explicitly.
   await db.batch([
     db.prepare('DELETE FROM health_checks WHERE target_id = ?').bind(targetId),
     db.prepare('DELETE FROM incidents WHERE target_id = ?').bind(targetId),
@@ -250,8 +317,33 @@ export async function deleteTarget(db: D1Database, targetId: string): Promise<vo
   ]);
 }
 
-/** Removes raw health checks older than the retention window. */
-export async function pruneOldChecks(db: D1Database, retentionDays: number): Promise<void> {
-  const days = Math.max(retentionDays, 31); // keep at least 30d for the 30-day uptime metric
-  await db.prepare(`DELETE FROM health_checks WHERE timestamp < datetime('now', ?)`).bind(`-${days} days`).run();
+/** 
+ * Session Storage helpers
+ */
+export async function saveSession(db: D1Database, id: string, user: string, expiresAt: number): Promise<void> {
+  await initDatabase(db);
+  await db
+    .prepare('INSERT INTO sessions (id, user, expires_at) VALUES (?, ?, ?)')
+    .bind(id, user, expiresAt)
+    .run();
+}
+
+export async function deleteSession(db: D1Database, id: string): Promise<void> {
+  await initDatabase(db);
+  await db.prepare('DELETE FROM sessions WHERE id = ?').bind(id).run();
+}
+
+/** 
+ * Maintenance: Pruning old health checks, expired sessions, and expired rate limits
+ */
+export async function pruneMaintenance(db: D1Database, retentionDays: number = 31): Promise<void> {
+  await initDatabase(db);
+  const days = Math.max(retentionDays, 31);
+  const now = Math.floor(Date.now() / 1000);
+
+  await db.batch([
+    db.prepare(`DELETE FROM health_checks WHERE timestamp < datetime('now', ?)`).bind(`-${days} days`),
+    db.prepare(`DELETE FROM sessions WHERE expires_at < ?`).bind(now),
+    db.prepare(`DELETE FROM rate_limits WHERE reset_at < ?`).bind(now),
+  ]);
 }

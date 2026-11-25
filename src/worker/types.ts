@@ -9,6 +9,10 @@ export interface Env {
   CF_ACCESS_TEAM_DOMAIN?: string;
   /** Application Audience (AUD) tag of the Access application. */
   CF_ACCESS_AUD?: string;
-  /** Set to "true" ONLY for temporary testing without Cloudflare Access. */
+  /** Set to "true" ONLY for temporary testing without Cloudflare Access or password. */
   ALLOW_UNAUTHENTICATED?: string;
+  /** Dashboard Admin Password (anti-bypass protection). Default: Workerkubabi@1234 or configured secret */
+  ADMIN_PASSWORD?: string;
+  /** Secret key for HMAC session tokens. */
+  SESSION_SECRET?: string;
 }

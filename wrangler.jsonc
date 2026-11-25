@@ -1,30 +1,33 @@
 {
-	"$schema": "node_modules/wrangler/config-schema.json",
-	"name": "cloudflare-vps-monitoring",
-	"main": "src/worker/index.ts",
-	"compatibility_date": "2025-02-15",
-	"compatibility_flags": [
-		"nodejs_compat"
-	],
-	"assets": {
-		"directory": "./dist",
-		"binding": "ASSETS",
-		"not_found_handling": "single-page-application"
-	},
-	"d1_databases": [
-		{
-			"binding": "DB",
-			"database_name": "vps_monitor_db",
-			"database_id": "8b710e35-96ac-4e19-acf6-63d6e1709817",
-			"remote": true
-		}
-	],
-	"triggers": {
-		"crons": [
-			"*/2 * * * *"
-		]
-	},
-	"observability": {
-		"enabled": true
-	}
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "cloudflare-vps-monitoring",
+  "main": "src/worker/index.ts",
+  "compatibility_date": "2025-02-15",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "vps_monitor_db",
+      "database_id": "8b710e35-96ac-4e19-acf6-63d6e1709817"
+    }
+  ],
+  "triggers": {
+    "crons": [
+      "*/2 * * * *"
+    ]
+  },
+  "vars": {
+    "LATENCY_DEGRADED_THRESHOLD_MS": "1000",
+    "RETENTION_DAYS": "31"
+  },
+  "observability": {
+    "enabled": true
+  }
 }
